@@ -170,17 +170,27 @@ func _get_serialized_input() -> int:
 	mask |= (key_value << 8)
 #	print("Mask=%02X" % mask)
 	return mask
+const FRAME_TIME_USEC := 16639
 
 func _thread_loop():
+	var next_frame_time := Time.get_ticks_usec()
 	while true:
 		if exit_thread:
 			break
 		if is_paused or not emu_system:
 			OS.delay_msec(10)
+			next_frame_time = Time.get_ticks_usec()
 			continue
+
 		var input_mask = _get_serialized_input()
 		emu_system.run_slice(input_mask)
 		_virtual_frame_count += 1
+		next_frame_time += FRAME_TIME_USEC
+		var now := Time.get_ticks_usec()
+		if next_frame_time > now:
+			OS.delay_usec(next_frame_time - now)
+		else:
+			next_frame_time = now
 
 func _to_binary_string(byte: int) -> String:
 	var s = ""

@@ -6,6 +6,7 @@ use crate::nes::cartridge::Cartridge;
 use crate::nes::mapper1::Mapper1;
 use crate::nes::mapper2::Mapper2;
 use crate::nes::mapper3::Mapper3;
+use crate::nes::mapper7::Mapper7;
 use crate::nes::mapper9::Mapper9;
 
 use godot::prelude::*;
@@ -214,6 +215,11 @@ impl NesSystem {
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper3::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             }
+            7 => { // AxROM
+                godot_print!("Mapper7 (AxROM) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper7::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            } 
             9 => { // CNROM
                 godot_print!("Mapper9 (MMC2) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
