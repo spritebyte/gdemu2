@@ -31,7 +31,8 @@ pub struct NesPPU {
     oam_addr: u8,   // $2003
     scroll: u16,    // $2005 internal latches
     addr: u16,      // $2006 internal latches
-
+    scanline_bg: [(u8, u8, u8); 33],   // (low_byte, high_byte, palette_idx) per tile, this scanline
+    scanline_sprites: Vec<(usize, u8, u8, u8, u8, bool)>, // (oam_index, sprite_x, low_byte, high_byte, attr, is_sprite_zero)
     // Addresses and internal latches
     base_nametable_address: u16,
     vram_increment:u8,
@@ -73,14 +74,11 @@ impl NesPPU {
             frame_ready: false, scanline: 0, cycle: 0, w_latch: 0, fine_x: 0,
             v_addr: 0, t_addr: 0, data_buffer: 0,
             vram: [0;2048], palette_ram: [0;32], oam: [0;256],
+            scanline_bg: [(0, 0, 0); 33], scanline_sprites: Vec::with_capacity(8),
             back_buffer: vec![0; buffer_size],
             front_buffer: Arc::new(vec![0; buffer_size]),
             system_frame_ready,
         }
-    }
-
-    pub fn init(&mut self) {
-
     }
 
     pub fn reset(&mut self) {
@@ -93,7 +91,9 @@ impl NesPPU {
     pub fn step(&mut self, mapper: &dyn Mapper, cycles: u32) {
         for _ in 0..cycles {
             if self.scanline >= 0 && self.scanline < 240 {
-                if self.cycle >= 1 && self.cycle <= 256 {
+                if self.cycle == 0 {
+                    self.prefetch_scanline(mapper);
+                } else if self.cycle >= 1 && self.cycle <= 256 {
                     self.render_pixel(mapper);
                 }
             }
@@ -170,7 +170,6 @@ impl NesPPU {
         let y = self.scanline as usize;
         let pixel_index = (y * 256 + x) * 4;
 
-        // Fallback color if background layer rendering is disabled in PPUMASK
         if (self.mask & 0x08) == 0 {
             let color_idx = self.ppu_read(mapper, 0x3F00) & 0x3F;
             let (r, g, b) = NES_PALETTE[color_idx as usize];
@@ -181,145 +180,118 @@ impl NesPPU {
             return;
         }
 
-        // --- SCROLLING BACKGROUND MATHEMATICS (Loopy Architecture) ---
-        // Extract base scroll coordinates directly from v_addr
-        let start_coarse_x = (self.v_addr & 0x001F) as usize;
-        let coarse_y = ((self.v_addr >> 5) & 0x001F) as usize;
-        let start_nt_h = ((self.v_addr >> 10) & 0x01) as usize;
-        let nt_v = ((self.v_addr >> 11) & 0x01) as usize;
-        let fine_y = ((self.v_addr >> 12) & 0x0007) as usize;
-
-        // Calculate absolute horizontal coordinates across the current nametable boundaries
-        let total_x = (start_coarse_x * 8) + (start_nt_h * 256) + (self.fine_x as usize) + x;
-        let tile_x = (total_x / 8) % 32;
-        let nt_h = (total_x / 256) % 2;
-        let fine_x = total_x % 8;
-
-        // Fetch Tile ID from Nametable layout memory
-        let base_nt = 0x2000 + ((nt_v << 1) | nt_h) as u16 * 0x400;
-        let nt_addr = base_nt + (coarse_y * 32 + tile_x) as u16;
-        let tile_id = self.ppu_read(mapper, nt_addr);
-
-        // Fetch raw image lines from CHR-ROM Pattern Table
-        let pattern_addr = self.background_pattern_table + (tile_id as u16 * 16) + fine_y as u16;
-        let low_byte = self.ppu_read(mapper, pattern_addr);
-        let high_byte = self.ppu_read(mapper, pattern_addr + 8);
-
-        // Split out the 2-bit local tile color index
-        let bit_shift = 7 - fine_x;
+        // Background: straight from this scanline's prefetched cache
+        let total_x = self.fine_x as usize + x;
+        let (low_byte, high_byte, palette_idx) = self.scanline_bg[total_x / 8];
+        let bit_shift = 7 - (total_x % 8);
         let pixel_color_bit = ((low_byte >> bit_shift) & 0x01) | (((high_byte >> bit_shift) & 0x01) << 1);
 
-        // Fetch Palette quadrant groupings from Attribute Table
-        let attr_table_addr = base_nt + 0x03C0 + ((coarse_y / 4) * 8 + (tile_x / 4)) as u16;
-        let attr_byte = self.ppu_read(mapper, attr_table_addr);
-        let quadrant_x = (tile_x % 4) / 2;
-        let quadrant_y = (coarse_y % 4) / 2;
-        let attr_shift = (quadrant_y * 2 + quadrant_x) * 2;
-        let palette_idx = (attr_byte >> attr_shift) & 0x03;
-
-        // Match color profiles
         let palette_base = 0x3F00 + (palette_idx as u16 * 4);
-        let final_color_addr = if pixel_color_bit == 0 {
-            0x3F00 
-        } else {
-            palette_base + pixel_color_bit as u16
-        };
-
+        let final_color_addr = if pixel_color_bit == 0 { 0x3F00 } else { palette_base + pixel_color_bit as u16 };
         let color_idx = self.ppu_read(mapper, final_color_addr) & 0x3F;
         let (r, g, b) = NES_PALETTE[color_idx as usize];
 
-        // Store the final color values to write
         let mut final_r = r;
         let mut final_g = g;
         let mut final_b = b;
 
-        // --- SPRITE LAYER OVERLAY ---
-        if (self.mask & 0x10) != 0 { // Check if sprites are enabled in PPUMASK
-            let height = self.sprite_size as usize;
-            
-            // Loop backwards from 63 down to 0. 
-            // This ensures lower OAM indices (like Sprite 0) are drawn LAST, 
-            // correctly overwriting higher index sprites when they overlap.
-            for i in (0..64).rev() {
-                let oam_idx = i * 4;
-                let sprite_y = self.oam[oam_idx] as usize;
-                let sprite_tile = self.oam[oam_idx + 1];
-                let sprite_attr = self.oam[oam_idx + 2];
-                let sprite_x = self.oam[oam_idx + 3] as usize;
+        if (self.mask & 0x10) != 0 {
+            // Iterate highest OAM index first, lowest last — lowest index ends up drawn "on top", matching original priority
+            for &(_oam_idx, sprite_x, low_byte, high_byte, sprite_attr, is_sprite_zero) in self.scanline_sprites.iter().rev() {
+                let sprite_x = sprite_x as usize;
+                if x < sprite_x || x >= sprite_x + 8 { continue; }
 
-                // NES hardware delays sprite evaluation by exactly 1 scanline line offset
-                if y >= sprite_y + 1 && y < sprite_y + 1 + height {
-                    let mut fine_y = y - (sprite_y + 1);
-                    if (sprite_attr & 0x80) != 0 { // Attribute Bit 7: Vertical Flip
-                        fine_y = height - 1 - fine_y;
-                    }
+                let mut fine_x = x - sprite_x;
+                if (sprite_attr & 0x40) != 0 { fine_x = 7 - fine_x; } // horizontal flip (vertical was baked in during prefetch)
 
-                    if x >= sprite_x && x < sprite_x + 8 {
-                        let mut fine_x = x - sprite_x;
-                        if (sprite_attr & 0x40) != 0 { // Attribute Bit 6: Horizontal Flip
-                            fine_x = 7 - fine_x;
-                        }
+                let bit_shift = 7 - fine_x;
+                let sprite_pixel_bit = ((low_byte >> bit_shift) & 0x01) | (((high_byte >> bit_shift) & 0x01) << 1);
+                if sprite_pixel_bit == 0 { continue; } // transparent
 
-                        // Resolve CHR Pattern Table addresses for 8x8 vs 8x16 configurations
-                        let table = if height == 16 {
-                            ((sprite_tile & 0x01) as u16) * 0x1000
-                        } else {
-                            self.sprite_pattern_table
-                        };
+                if is_sprite_zero && pixel_color_bit != 0 && x < 255 {
+                    self.status |= 0x40; // sprite 0 hit
+                }
 
-                        let actual_tile = if height == 16 {
-                            sprite_tile & 0xFE
-                        } else {
-                            sprite_tile
-                        };
+                let sprite_palette_idx = (sprite_attr & 0x03) + 4;
+                let palette_base = 0x3F00 + (sprite_palette_idx as u16 * 4);
+                let s_color_idx = self.ppu_read(mapper, palette_base + sprite_pixel_bit as u16) & 0x3F;
+                let (sr, sg, sb) = NES_PALETTE[s_color_idx as usize];
 
-                        let mut final_fine_y = fine_y;
-                        let mut tile_offset = 0u16;
-                        if height == 16 && fine_y >= 8 {
-                            tile_offset = 1;
-                            final_fine_y -= 8;
-                        }
-
-                        let pattern_addr = table + ((actual_tile as u16 + tile_offset) * 16) + final_fine_y as u16;
-                        let low_byte = self.ppu_read(mapper, pattern_addr);
-                        let high_byte = self.ppu_read(mapper, pattern_addr + 8);
-
-                        let bit_shift = 7 - fine_x;
-                        let sprite_pixel_bit = ((low_byte >> bit_shift) & 0x01) | (((high_byte >> bit_shift) & 0x01) << 1);
-
-                        // 0 indicates a transparent sprite pixel—ignore and let background show through
-                        if sprite_pixel_bit != 0 { 
-                            if i == 0 && pixel_color_bit != 0 && x < 255 {
-                                if (self.mask & 0x08) != 0 {
-                                    self.status |= 0x40;
-                                }
-                            }
-                            // Sprite Palettes live at memory space index ranges 4-7 ($3F10-$3FFF)
-                            let sprite_palette_idx = (sprite_attr & 0x03) + 4;
-                            let palette_base = 0x3F00 + (sprite_palette_idx as u16 * 4);
-                            let sprite_color_addr = palette_base + sprite_pixel_bit as u16;
-
-                            let s_color_idx = self.ppu_read(mapper, sprite_color_addr) & 0x3F;
-                            let (sr, sg, sb) = NES_PALETTE[s_color_idx as usize];
-
-                            // Attribute Bit 5: Priority (0 = In Front, 1 = Behind Background)
-                            let bg_transparent = pixel_color_bit == 0;
-                            if (sprite_attr & 0x20) == 0 || bg_transparent {
-                                final_r = sr;
-                                final_g = sg;
-                                final_b = sb;
-                            }
-                        }
-                    }
+                let bg_transparent = pixel_color_bit == 0;
+                if (sprite_attr & 0x20) == 0 || bg_transparent {
+                    final_r = sr;
+                    final_g = sg;
+                    final_b = sb;
                 }
             }
         }
 
-        // Commit final composition color data to back-buffer pixel arrays
         self.back_buffer[pixel_index] = final_r;
         self.back_buffer[pixel_index + 1] = final_g;
         self.back_buffer[pixel_index + 2] = final_b;
         self.back_buffer[pixel_index + 3] = 255;
+    }
+
+    fn prefetch_scanline(&mut self, mapper: &dyn Mapper) {
+        let mut coarse_x = (self.v_addr & 0x001F) as u16;
+        let mut h_nt = (self.v_addr >> 10) & 0x01;   // toggles as we walk across tiles
+        let v_nt = (self.v_addr >> 11) & 0x01;       // fixed for the whole scanline
+        let coarse_y = ((self.v_addr >> 5) & 0x1F) as usize;
+        let fine_y = ((self.v_addr >> 12) & 0x07) as usize;
+
+        for i in 0..33 {
+            let base_nt = 0x2000 + ((v_nt << 1 | h_nt) * 0x400);
+            let nt_addr = base_nt + (coarse_y as u16 * 32 + coarse_x);
+            let tile_id = self.ppu_read(mapper, nt_addr);
+
+            let pattern_addr = self.background_pattern_table + (tile_id as u16 * 16) + fine_y as u16;
+            let low_byte = self.ppu_read(mapper, pattern_addr);
+            let high_byte = self.ppu_read(mapper, pattern_addr + 8);
+
+            let attr_table_addr = base_nt + 0x03C0 + ((coarse_y / 4) as u16 * 8) + (coarse_x / 4);
+            let attr_byte = self.ppu_read(mapper, attr_table_addr);
+            let quadrant_x = (coarse_x as usize % 4) / 2;
+            let quadrant_y = (coarse_y % 4) / 2;
+            let attr_shift = (quadrant_y * 2 + quadrant_x) * 2;
+            let palette_idx = (attr_byte >> attr_shift) & 0x03;
+
+            self.scanline_bg[i] = (low_byte, high_byte, palette_idx);
+
+            coarse_x += 1;
+            if coarse_x == 32 {
+                coarse_x = 0;
+                h_nt ^= 1;
+            }
+        }
+
+        self.scanline_sprites.clear();
+        let height = self.sprite_size as usize;
+        for i in 0..64 {
+            let oam_idx = i * 4;
+            let sprite_y = self.oam[oam_idx] as usize;
+            if (self.scanline as usize) < sprite_y + 1 || (self.scanline as usize) >= sprite_y + 1 + height {
+                continue;
+            }
+            let sprite_tile = self.oam[oam_idx + 1];
+            let sprite_attr = self.oam[oam_idx + 2];
+            let sprite_x = self.oam[oam_idx + 3];
+
+            let mut fine_y = self.scanline as usize - (sprite_y + 1);
+            if (sprite_attr & 0x80) != 0 { fine_y = height - 1 - fine_y; }
+
+            let table = if height == 16 { ((sprite_tile & 0x01) as u16) * 0x1000 } else { self.sprite_pattern_table };
+            let actual_tile = if height == 16 { sprite_tile & 0xFE } else { sprite_tile };
+            let mut tile_offset = 0u16;
+            let mut final_fine_y = fine_y;
+            if height == 16 && fine_y >= 8 { tile_offset = 1; final_fine_y -= 8; }
+
+            let pattern_addr = table + ((actual_tile as u16 + tile_offset) * 16) + final_fine_y as u16;
+            let low_byte = self.ppu_read(mapper, pattern_addr);
+            let high_byte = self.ppu_read(mapper, pattern_addr + 8);
+
+            self.scanline_sprites.push((i, sprite_x, low_byte, high_byte, sprite_attr, i == 0));
+            if self.scanline_sprites.len() >= 8 { break; }
+        }
     }
 
     fn get_sprite_pixel(&self, mapper: &dyn Mapper, x: usize, y: usize) -> Option<SpritePixelInfo> {
