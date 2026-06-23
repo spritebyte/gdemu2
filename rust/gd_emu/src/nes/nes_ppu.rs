@@ -92,21 +92,24 @@ impl NesPPU {
     /// Step the PPU by a designated number of clock cycles (typically CPU cycles * 3)
     pub fn step(&mut self, mapper: &dyn Mapper, cycles: u32) {
         for _ in 0..cycles {
-            // render visible pixel matrix
-            if self.scanline >= 0 && self.scanline < 240 && self.cycle >= 1 && self.cycle <= 256 {
-//            if self.scanline < 240 || self.scanline == 261 {
-//                if self.cycle == 256 {
-//                    if self.scanline >= 0 && self.scanline < 240 {
-                self.render_pixel(mapper);
-//                    }
-//                    self.increment_vertical_scroll();
-//                }
-//                else if self.cycle == 257 {
-//                    self.v_addr = (self.v_addr & !0x041F) | (self.t_addr & 0x041F);
-//                }
-//                else if self.cycle == 304 && self.scanline == 261 {
-//                    self.v_addr = self.t_addr;
-//                }
+            if self.scanline >= 0 && self.scanline < 240 {
+                if self.cycle >= 1 && self.cycle <= 256 {
+                    self.render_pixel(mapper);
+                }
+            }
+
+            if self.mask & 0x18 != 0 {
+                if (self.scanline >= 0 && self.scanline < 240) || self.scanline == -1 {
+                    if self.cycle == 256 {
+                        self.increment_vertical_scroll();
+                    }
+                    else if self.cycle == 257 {
+                        self.v_addr = (self.v_addr & ! 0x041F) | (self.t_addr & 0x041F);
+                    }
+                }
+                if self.scanline == -1 && self.cycle == 304 {
+                    self.v_addr = (self.v_addr & !0x7BE0) | (self.t_addr & 0x7BE0);
+                }
             }
 
             self.cycle += 1;
@@ -178,15 +181,23 @@ impl NesPPU {
             return;
         }
 
-        // Calculate tile map positions
-        let tile_x = x / 8;
-        let tile_y = y / 8;
-        let fine_x = x % 8;
-        let fine_y = y % 8;
+        // --- SCROLLING BACKGROUND MATHEMATICS (Loopy Architecture) ---
+        // Extract base scroll coordinates directly from v_addr
+        let start_coarse_x = (self.v_addr & 0x001F) as usize;
+        let coarse_y = ((self.v_addr >> 5) & 0x001F) as usize;
+        let start_nt_h = ((self.v_addr >> 10) & 0x01) as usize;
+        let nt_v = ((self.v_addr >> 11) & 0x01) as usize;
+        let fine_y = ((self.v_addr >> 12) & 0x0007) as usize;
+
+        // Calculate absolute horizontal coordinates across the current nametable boundaries
+        let total_x = (start_coarse_x * 8) + (start_nt_h * 256) + (self.fine_x as usize) + x;
+        let tile_x = (total_x / 8) % 32;
+        let nt_h = (total_x / 256) % 2;
+        let fine_x = total_x % 8;
 
         // Fetch Tile ID from Nametable layout memory
-        let base_nt = 0x2000 + ((self.ctrl & 0x03) as u16 * 0x400);
-        let nt_addr = base_nt + (tile_y * 32 + tile_x) as u16;
+        let base_nt = 0x2000 + ((nt_v << 1) | nt_h) as u16 * 0x400;
+        let nt_addr = base_nt + (coarse_y * 32 + tile_x) as u16;
         let tile_id = self.ppu_read(mapper, nt_addr);
 
         // Fetch raw image lines from CHR-ROM Pattern Table
@@ -199,10 +210,10 @@ impl NesPPU {
         let pixel_color_bit = ((low_byte >> bit_shift) & 0x01) | (((high_byte >> bit_shift) & 0x01) << 1);
 
         // Fetch Palette quadrant groupings from Attribute Table
-        let attr_table_addr = base_nt + 0x03C0 + ((tile_y / 4) * 8 + (tile_x / 4)) as u16;
+        let attr_table_addr = base_nt + 0x03C0 + ((coarse_y / 4) * 8 + (tile_x / 4)) as u16;
         let attr_byte = self.ppu_read(mapper, attr_table_addr);
         let quadrant_x = (tile_x % 4) / 2;
-        let quadrant_y = (tile_y % 4) / 2;
+        let quadrant_y = (coarse_y % 4) / 2;
         let attr_shift = (quadrant_y * 2 + quadrant_x) * 2;
         let palette_idx = (attr_byte >> attr_shift) & 0x03;
 

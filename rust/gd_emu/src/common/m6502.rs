@@ -296,9 +296,9 @@ impl M6502Cpu {
             // LDX
             0xA2 => { self.x = self._read_pc(bus); self.update_z_n_flags(self.x); self.last_cycles = 2; }
             0xA6 => { self.load_register_x(bus, AddressingMode::ZeroPage); self.last_cycles = 3; }
-            0xB6 => { self.load_register_x(bus, AddressingMode::ZeroPageX); self.last_cycles = 4; }
+            0xB6 => { self.load_register_x(bus, AddressingMode::ZeroPageY); self.last_cycles = 4; }
             0xAE => { self.load_register_x(bus, AddressingMode::Absolute); self.last_cycles = 4; }
-            0xBE => { let extra_cycles = self.load_register_x(bus, AddressingMode::AbsoluteX); self.last_cycles = 4 + extra_cycles; }
+            0xBE => { let extra_cycles = self.load_register_x(bus, AddressingMode::AbsoluteY); self.last_cycles = 4 + extra_cycles; }
 
             // LDY
             0xA0 => { self.y = self._read_pc(bus); self.update_z_n_flags(self.y); self.last_cycles = 2; }
