@@ -6,8 +6,10 @@ use crate::nes::cartridge::Cartridge;
 use crate::nes::mapper1::Mapper1;
 use crate::nes::mapper2::Mapper2;
 use crate::nes::mapper3::Mapper3;
+use crate::nes::mapper9::Mapper9;
 
 use godot::prelude::*;
+use godot::classes::{Node, AudioStreamGeneratorPlayback};
 use godot::global::godot_print;
 use godot::classes::{AudioStreamPlayer,Image,ImageTexture,Texture2D};
 use godot::classes::image::Format;
@@ -31,6 +33,7 @@ pub struct NesSystem {
     is_running: Arc<AtomicBool>,
     save_battery_path: String,
     save_filename: String,
+    playback: Option<Gd<AudioStreamGeneratorPlayback>>,
 }
 
 #[godot_api]
@@ -83,7 +86,8 @@ impl NesSystem {
                 save_filename: base_name,
                 frame_ready,
                 is_running: Arc::new(AtomicBool::new(false)),
-                save_battery_path: "user://GD_EMU/NES/Save".to_string()
+                save_battery_path: "user://GD_EMU/NES/Save".to_string(),
+                playback: None,
             }
         }))
     }
@@ -151,6 +155,11 @@ impl NesSystem {
     }
 
     #[func]
+    pub fn set_audio_playback(&mut self, playback: Gd<AudioStreamGeneratorPlayback>) {
+        self.playback = Some(playback);
+    }
+
+    #[func]
     pub fn is_frame_ready(&self) -> bool {
         // Atomic read takes virtually zero execution cost and avoids Mutex lock stalls!
         self.frame_ready.load(Ordering::Acquire)
@@ -199,12 +208,18 @@ impl NesSystem {
                 godot_print!("Mapper2 (UxROM) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper2::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
-            } 
+            }
             3 => { // CNROM
                 godot_print!("Mapper3 (CNROM) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper3::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            }
+            9 => { // CNROM
+                godot_print!("Mapper9 (MMC2) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper9::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             } 
+
                 // 4 => Some(Box::new(Mapper4::new(prg_banks, chr_banks))), // MMC3 (Future)
             _ => {
                 godot_error!("Unsupported Mapper ID: {}", mapper_id);

@@ -59,7 +59,7 @@ impl AddressBus for NesBus {
                 }
                 value
             }
-            0x8000..=0xFFFF => self.cartridge.mapper.cpu_read(addr),
+            0x4020..=0xFFFF => self.cartridge.mapper.cpu_read(addr),
             _ => 0,
         }
     }
@@ -90,11 +90,13 @@ impl AddressBus for NesBus {
                     self.pad1_shift_reg.set(self.pad1_state);
                 }
             }
-            0x4017 => {
-                self.apu.get_mut().write_4017(value);
-            }
-            0x4000..=0x401F => { /* APU / IO registers - ignore for now */ }
-            0x8000..=0xFFFF => self.cartridge.mapper.cpu_write(addr, value),
+//            0x4017 => {
+//              self.apu.get_mut().write_4017(value);
+//            }
+            0x4000..=0x401F => { 
+                self.apu.get_mut().write_reg(addr, value);
+             }
+            0x4020..=0xFFFF => self.cartridge.mapper.cpu_write(addr, value),
             _ => {}
         }
     }

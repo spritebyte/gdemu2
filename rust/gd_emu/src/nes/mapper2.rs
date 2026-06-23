@@ -39,7 +39,7 @@ impl Mapper2 {
 
 impl Mapper for Mapper2 {
     fn update_cycles(&mut self, cycles: u64) {
-        self.current_cycle = cycles as i64;
+        self.current_cycle += cycles as i64;
     }
 
     fn cpu_read(&self, addr: u16) -> u8 {

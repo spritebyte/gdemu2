@@ -145,9 +145,9 @@ impl M6502Cpu {
 
         let opcode = bus.read_byte(self.pc);
 //        if self.pc >= 0x8000 {
-        let target = bus.read_word(self.pc+1);
+//        let target = bus.read_word(self.pc+1);       
 //        println!("({}) Current opcode: {:02x} PC={:04x}|A={:02X}|SP={:04X}|target={:04X}", self.total_cycles, opcode, self.pc, self.a, self.sp, target);
-//        }
+
         self.last_opcode = opcode;
         self.last_cycles = 0;
         self.pc = self.pc.wrapping_add(1);
@@ -416,6 +416,34 @@ impl M6502Cpu {
             0x8C => { let addr = self.get_operand_address(bus, AddressingMode::Absolute); bus.write_byte(addr, self.y); self.last_cycles = 4; }
 
             // Unofficial opcodes
+            0x07 => { // SLO
+                self.op_slo(bus, AddressingMode::ZeroPage);
+                self.last_cycles = 5;
+            }
+            0x17 => { // SLO
+                self.op_slo(bus, AddressingMode::ZeroPageX);
+                self.last_cycles = 6;
+            }
+            0x0F => { // SLO
+                self.op_slo(bus, AddressingMode::Absolute);
+                self.last_cycles = 6;
+            }
+            0x1F => { // SLO
+                self.op_slo(bus, AddressingMode::AbsoluteX);
+                self.last_cycles = 7;
+            }
+            0x1B => { // SLO
+                self.op_slo(bus, AddressingMode::AbsoluteY);
+                self.last_cycles = 7;
+            }
+            0x03 => { // SLO
+                self.op_slo(bus, AddressingMode::IndirectX);
+                self.last_cycles = 8;
+            }
+            0x13 => { // SLO
+                self.op_slo(bus, AddressingMode::IndirectY);
+                self.last_cycles = 8;
+            }
             0x33 => {
                 self.rotate_left_memory(bus, AddressingMode::IndirectY);
                 self._op_and_a(bus, AddressingMode::IndirectY);
@@ -543,15 +571,15 @@ impl M6502Cpu {
 
     fn _op_asl_memory(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode) {
         let addr = self.get_operand_address(bus, p_addressing_mode);
-        let value = bus.read_byte(addr);
-    
-        // Set carry using bit 7
-        if value & 0x80 != 0 { self.p.insert(Status::C); } else { self.p.remove(Status::C); }
-    
-        let result = value << 1;
-    
-        bus.write_byte(addr, result);
-        self.update_z_n_flags(result);
+        self.asl_at_address(bus, addr);
+    }
+
+    fn op_slo(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode) -> u8 {
+        let addr = self.get_operand_address(bus, p_addressing_mode);
+        let shifted_value = self.asl_at_address(bus, addr);
+        self.a = self.a | shifted_value;
+        self.update_z_n_flags(self.a);
+        if self.operand_address_crossed_page { 1 } else { 0 }
     }
 
     fn bit_test_a(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode) {
@@ -695,6 +723,24 @@ impl M6502Cpu {
         bus.write_byte(addr, result);
         self.update_z_n_flags(result);
         self.add_with_carry_logic(result);
+    }
+
+    fn asl_at_address(&mut self, bus: &mut dyn AddressBus, addr: u16) -> u8 {
+        let value = bus.read_byte(addr);
+
+        // Set carry using bit 7
+        if value & 0x80 != 0 { 
+            self.p.insert(Status::C); 
+        } else {
+            self.p.remove(Status::C); 
+        }
+
+        let result = value << 1;
+
+        bus.write_byte(addr, result);
+        self.update_z_n_flags(result);
+    
+        result
     }
 
     // Flag helpers

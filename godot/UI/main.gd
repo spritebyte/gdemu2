@@ -222,6 +222,8 @@ func execute_load(path: String, internal_zip_file: String = "") -> void:
 	if new_system:
 		emu_system = new_system
 		emu_system.power_on(audio_player)
+		var playback = audio_player.get_stream_playback()
+		emu_system.set_audio_playback(playback)
 		cpu_thread.start(Callable(self, "_thread_loop"))
 	else:
 		OS.alert("Could not load ROM: %s" % path.get_file())

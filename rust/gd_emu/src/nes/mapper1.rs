@@ -64,16 +64,17 @@ impl Mapper1 {
 
 impl Mapper for Mapper1 {
     fn update_cycles(&mut self, cycles: u64) {
-        self.current_cycle = cycles as i64;
+        self.current_cycle += cycles as i64;
     }
 
     fn cpu_read(&self, addr: u16) -> u8 {
         if addr >= 0x6000 && addr < 0x8000 {
             return self.prg_ram[(addr - 0x6000) as usize];
         }
+
         if addr >= 0x8000 {
             let prg_mode = (self.control >> 2) & 0x03;
-            let bank_size = 16384;
+            let bank_size: usize = 16384;
 
             match prg_mode {
                 0 | 1 => {
@@ -102,7 +103,7 @@ impl Mapper for Mapper1 {
                     } else {
                         let last_bank = self.prg_banks - 1;
                         let rom_addr = (last_bank * bank_size) + (addr - 0xC000) as usize;
-                        return self.prg_rom[rom_addr];
+                        return self.prg_rom[rom_addr % self.prg_rom.len()];
                     }
                 }
                 _ => unreachable!(),
