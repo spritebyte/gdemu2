@@ -4,6 +4,8 @@ use crate::nes::nes_bus::NesBus;
 use crate::nes::mappers::{Mapper, Mapper0, Mirroring};
 use crate::nes::cartridge::Cartridge;
 use crate::nes::mapper1::Mapper1;
+use crate::nes::mapper2::Mapper2;
+use crate::nes::mapper3::Mapper3;
 
 use godot::prelude::*;
 use godot::global::godot_print;
@@ -188,10 +190,22 @@ impl NesSystem {
                 godot_print!("Mapper0 (Nrom) created with initial mirroring bit={mirroring_bit}");
                 Some(Box::new(Mapper0::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring))) // NROM
             }
-            1 => {  godot_print!("Mapper1 (MMC1) created");
+            1 => { // MMC1 
+                godot_print!("Mapper1 (MMC1) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
-                Some(Box::new(Mapper1::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit))) } // MMC1
-            // 4 => Some(Box::new(Mapper4::new(prg_banks, chr_banks))), // MMC3 (Future)
+                Some(Box::new(Mapper1::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            } 
+            2 => { // UxROM
+                godot_print!("Mapper2 (UxROM) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper2::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            } 
+            3 => { // CNROM
+                godot_print!("Mapper3 (CNROM) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper3::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            } 
+                // 4 => Some(Box::new(Mapper4::new(prg_banks, chr_banks))), // MMC3 (Future)
             _ => {
                 godot_error!("Unsupported Mapper ID: {}", mapper_id);
                 None
