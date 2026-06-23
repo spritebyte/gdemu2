@@ -1,0 +1,11 @@
+[package]
+name = "gd_emu"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bitflags = "2.13.0"
+godot = { version = "0.5.3", features = ["experimental-threads"] }

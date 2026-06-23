@@ -1,0 +1,6 @@
+/target/
+**/*.rs.bk
+.godot/
+*.translation
+.DS_Store
+Thumbs.db

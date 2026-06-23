@@ -1,0 +1,71 @@
+[gd_scene format=3 uid="uid://dmqrip33lf7oq"]
+
+[ext_resource type="Script" uid="uid://c5qy27hh664xf" path="res://UI/main.gd" id="1_vnck2"]
+
+[node name="MainUI" type="PanelContainer" unique_id=880421609]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_vnck2")
+
+[node name="MainVerticalStack" type="VBoxContainer" parent="." unique_id=1217306860]
+layout_mode = 2
+
+[node name="TopMenuBar" type="MenuBar" parent="MainVerticalStack" unique_id=1286185008]
+clip_children = 2
+layout_mode = 2
+
+[node name="FileMenu" type="PopupMenu" parent="MainVerticalStack/TopMenuBar" unique_id=684819892]
+oversampling_override = 1.0
+size = Vector2i(135, 116)
+visible = true
+
+[node name="EmulationMenu" type="PopupMenu" parent="MainVerticalStack/TopMenuBar" unique_id=1255017904]
+oversampling_override = 1.0
+visible = true
+
+[node name="DebugMenu" type="PopupMenu" parent="MainVerticalStack/TopMenuBar" unique_id=1380072654]
+oversampling_override = 1.0
+visible = true
+
+[node name="ViewMenu" type="PopupMenu" parent="MainVerticalStack/TopMenuBar" unique_id=305318371]
+oversampling_override = 1.0
+visible = true
+
+[node name="GameArea" type="HBoxContainer" parent="MainVerticalStack" unique_id=749457340]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+alignment = 1
+
+[node name="ScreenContainer" type="AspectRatioContainer" parent="MainVerticalStack/GameArea" unique_id=871644046]
+layout_mode = 2
+size_flags_horizontal = 3
+ratio = 1.333
+
+[node name="EmuDisplay" type="TextureRect" parent="MainVerticalStack/GameArea/ScreenContainer" unique_id=1407469383]
+unique_name_in_owner = true
+texture_filter = 1
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="RomDialog" type="FileDialog" parent="." unique_id=828783176]
+oversampling_override = 1.0
+title = "Open a File"
+size = Vector2i(896, 360)
+dialog_hide_on_ok = true
+file_mode = 0
+access = 2
+filters = PackedStringArray("*.col, *.rom", "*.nes", "*.gb", "*.zip")
+use_native_dialog = true
+hidden_files_toggle_enabled = false
+
+[node name="RomItemList" type="ItemList" parent="RomDialog" unique_id=392094491]
+offset_right = 40.0
+offset_bottom = 40.0
+
+[connection signal="confirmed" from="RomDialog" to="." method="_on_rom_selection_dialog_confirmed"]
+[connection signal="file_selected" from="RomDialog" to="." method="_on_rom_dialog_file_selected"]
