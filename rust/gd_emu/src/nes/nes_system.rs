@@ -114,14 +114,23 @@ impl NesSystem {
         self.bus.pad1_state = nes_pad_state;
 
         let mut cycles_this_frame:u16 = 0;
+        let ppu_mut = self.bus.ppu.get_mut();
+        let apu_mut = self.bus.apu.get_mut();
         while cycles_this_frame < 29780 {
             let cycles = self.cpu.step(&mut self.bus);
             let mapper_ref = &*self.bus.cartridge.mapper;
-            let ppu_mut = self.bus.ppu.get_mut();
-            ppu_mut.step(mapper_ref, (cycles * 3) as u32);
-            let apu_mut = self.bus.apu.get_mut();
-            apu_mut.step(cycles as u32);
+            self.bus.ppu.get_mut().step(mapper_ref, (cycles * 3) as u32);
+            self.bus.apu.get_mut().step(cycles as u32);
             cycles_this_frame += cycles as u16;
+        }
+        let samples = self.bus.apu.get_mut().take_audio_samples();
+        if !samples.is_empty() {
+            if let Some(playback) = self.playback.as_mut() {
+                let frames: PackedVector2Array = samples.iter()
+                    .map(|&s| Vector2::new(s, s))
+                    .collect();
+                playback.push_buffer(&frames);
+            }
         }
     }
 
