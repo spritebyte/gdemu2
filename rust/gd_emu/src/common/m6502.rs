@@ -102,6 +102,10 @@ impl M6502Cpu {
         }
     }
 
+    pub fn is_interrupt_disabled(&self) -> bool {
+        self.p.contains(Status::I)
+    }
+
     pub fn power_on(&mut self, bus: &impl AddressBus) {
         self.is_running = true;
         self.a = 0; self.x = 0; self.y = 0;
@@ -145,9 +149,13 @@ impl M6502Cpu {
 
         let opcode = bus.read_byte(self.pc);
 //        if self.pc >= 0x8000 {
-//        let target = bus.read_word(self.pc+1);       
-//        println!("({}) Current opcode: {:02x} PC={:04x}|A={:02X}|SP={:04X}|target={:04X}", self.total_cycles, opcode, self.pc, self.a, self.sp, target);
-
+        let target = bus.read_word(self.pc+1);       
+//        if self.total_cycles < 50000 {
+//            println!("({}) Current opcode: {:02x} PC={:04x}|A={:02X}|SP={:04X}|target={:04X}", self.total_cycles, opcode, self.pc, self.a, self.sp, target);
+//        }
+//        else {
+//            panic!("stop");
+//        }
         self.last_opcode = opcode;
         self.last_cycles = 0;
         self.pc = self.pc.wrapping_add(1);
@@ -444,7 +452,7 @@ impl M6502Cpu {
                 self.op_slo(bus, AddressingMode::IndirectY);
                 self.last_cycles = 8;
             }
-            0x33 => {
+            0x33 => { // if both of these call get_operand_address, pc will not be correct
                 self.rotate_left_memory(bus, AddressingMode::IndirectY);
                 self._op_and_a(bus, AddressingMode::IndirectY);
                 self.last_cycles = 8;
@@ -984,7 +992,7 @@ impl M6502Cpu {
         7
     }
 
-    fn trigger_irq(&mut self, bus: &mut dyn AddressBus) -> u8 {
+    pub fn trigger_irq(&mut self, bus: &mut dyn AddressBus) -> u8 {
         self._stack_push16(bus, self.pc);
         let flags:u8 = (self.p.bits() & !0x10) | 0x20;
         self._stack_push8(bus, flags);

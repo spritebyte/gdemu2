@@ -67,55 +67,103 @@ impl Mapper for Mapper1 {
         self.current_cycle += cycles as i64;
     }
 
+    fn get_sram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    fn load_sram(&mut self, data: &[u8]) {
+        if data.len() == self.prg_ram.len() {
+            self.prg_ram.copy_from_slice(data);
+        }
+    }
+
+    fn is_sram_dirty(&self) -> bool {
+        self.sram_dirty
+    }
+
+    fn clear_sram_dirty(&mut self) {
+        self.sram_dirty = false;
+    }
+
     fn cpu_read(&self, addr: u16) -> u8 {
         if addr >= 0x6000 && addr < 0x8000 {
-            return self.prg_ram[(addr - 0x6000) as usize];
+            let ram_disabled = (self.prg_bank & 0x10) != 0;
+            if ram_disabled {
+                return 0x00;
+            }
+            if !self.prg_ram.is_empty() {
+                return self.prg_ram[(addr - 0x6000) as usize];
+            }
+            return 0x00;
         }
 
-        if addr >= 0x8000 {
+        if addr >= 0x8000 && addr <= 0xFFFF {
             let prg_mode = (self.control >> 2) & 0x03;
             let bank_size: usize = 16384;
 
-            match prg_mode {
+            let mut surom_bank_ext = 0;
+            if self.prg_rom.len() == 524288 {
+                let chr_mode = (self.control >> 4) & 1;
+                if chr_mode == 0 {
+                    // 8KB CHR Mode: Bit 4 of CHR bank 0 controls the block selection
+                    surom_bank_ext = ((self.chr_bank_0 & 0x10) >> 4) as usize;
+                } else {
+                    // 4KB CHR Mode: CHR bank 0 controls lower slot, CHR bank 1 controls upper slot
+                    if addr < 0xC000 {
+                        surom_bank_ext = ((self.chr_bank_0 & 0x10) >> 4) as usize;
+                    } else {
+                        surom_bank_ext = ((self.chr_bank_1 & 0x10) >> 4) as usize;
+                    }
+                }
+            }                
+            let prg_base_bank = surom_bank_ext << 4;
+
+            let bank_idx = match prg_mode {
                 0 | 1 => {
                     // Mode 0 & 1: Switch 32KB at $8000 (ignore lowest bit of bank selection)
-                    let bank = (self.prg_bank & 0x0E) as usize;
-                    let rom_addr = (bank * bank_size) + (addr - 0x8000) as usize;
-                    return self.prg_rom[rom_addr % self.prg_rom.len()];
+                    let base = (self.prg_bank & 0x0F) as usize & 0xFE;
+                    if addr < 0xC000 {
+                        prg_base_bank + base
+                    } else {
+                        prg_base_bank + base + 1
+                    }
                 }
                 2 => {
                     // Mode 2: Fix first bank at $8000, switch 16KB bank at $C000
                     if addr < 0xC000 {
-                        let rom_addr = (addr - 0x8000) as usize; // Bank 0
-                        return self.prg_rom[rom_addr];
+                        prg_base_bank
                     } else {
-                        let bank = self.prg_bank as usize;
-                        let rom_addr = (bank * bank_size) + (addr - 0xC000) as usize;
-                        return self.prg_rom[rom_addr % self.prg_rom.len()];
+                        prg_base_bank + (self.prg_bank & 0x0F) as usize
                     }
                 }
                 3 => {
                     // Mode 3: Switch 16KB bank at $8000, fix last bank at $C000
                     if addr < 0xC000 {
-                        let bank = self.prg_bank as usize;
-                        let rom_addr = (bank * bank_size) + (addr - 0x8000) as usize;
-                        return self.prg_rom[rom_addr % self.prg_rom.len()];
+                        prg_base_bank + (self.prg_bank & 0x0F) as usize
                     } else {
-                        let last_bank = self.prg_banks - 1;
-                        let rom_addr = (last_bank * bank_size) + (addr - 0xC000) as usize;
-                        return self.prg_rom[rom_addr % self.prg_rom.len()];
+                        if self.prg_rom.len() == 524288 {
+                            prg_base_bank + 15 // Last bank of the 256KB SUROM block
+                        } else {
+                            self.prg_banks - 1 // Last bank of a standard sized ROM
+                        }
                     }
                 }
                 _ => unreachable!(),
-            }
+            };
+            let offset = (bank_idx * 16384) + (addr & 0x3FFF) as usize;
+            return self.prg_rom[offset % self.prg_rom.len()];
         }
         0
     }
 
     fn cpu_write(&mut self, addr: u16, value: u8) {
         if addr >= 0x6000 && addr < 0x8000 {
-            self.prg_ram[(addr - 0x6000) as usize] = value;
-            self.sram_dirty = true;
+            let ram_disabled = (self.prg_bank & 0x10) != 0;
+            if !ram_disabled && !self.prg_ram.is_empty() {
+                let index = (addr - 0x6000) as usize % self.prg_ram.len();
+                self.prg_ram[index] = value;
+                self.sram_dirty = true;
+            }
             return;
         }
         if addr < 0x8000 { return }
@@ -171,9 +219,9 @@ impl Mapper for Mapper1 {
 
     fn ppu_read(&self, addr: u16) -> u8 {
         if addr < 0x2000 {
-            // Handle CHR-RAM games (like Metroid)
+            // IF CHR-RAM exists, bypass all banking
             if self.chr_banks == 0 {
-                return self.chr_ram[addr as usize];
+                return self.chr_ram[addr as usize % self.chr_ram.len()];
             }
 
             // CHR-ROM handling (4KB switching vs 8KB switching)
@@ -181,10 +229,12 @@ impl Mapper for Mapper1 {
             if chr_mode == 1 {
                 // Two separate 4KB banks
                 if addr < 0x1000 {
-                    let offset = (self.chr_bank_0 as usize * 4096) + addr as usize;
+                    let bank = self.chr_bank_0 as usize;
+                    let offset = (bank * 4096) + addr as usize;
                     return self.chr_rom[offset % self.chr_rom.len()];
                 } else {
-                    let offset = (self.chr_bank_1 as usize * 4096) + (addr - 0x1000) as usize;
+                    let bank = self.chr_bank_1 as usize;
+                    let offset = (bank * 4096) + (addr - 0x1000) as usize;
                     return self.chr_rom[offset % self.chr_rom.len()];
                 }
             } else {

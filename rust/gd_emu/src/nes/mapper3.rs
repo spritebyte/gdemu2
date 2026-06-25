@@ -45,7 +45,7 @@ impl Mapper for Mapper3 {
     fn cpu_read(&self, addr: u16) -> u8 {
         if addr >= 0x8000 && addr <= 0xFFFF {
             let mask = if self.prg_banks > 1 { 0x7FFF } else { 0x3FFF };
-            return self.prg_rom[(addr & mask) as usize]; // Fixed: Cast index to usize
+            return self.prg_rom[(addr & mask) as usize];
         }
         0
     }
@@ -53,13 +53,13 @@ impl Mapper for Mapper3 {
     fn cpu_write(&mut self, addr: u16, value: u8) {
         if addr >= 0x8000 {
             let mask = if self.prg_banks > 1 { 0x7FFF } else { 0x3FFF };
-            let rom_value = self.prg_rom[(addr & mask) as usize]; // Fixed: Cast index to usize
+            let rom_value = self.prg_rom[(addr & mask) as usize];
             
             // CNROM Bus Conflict emulation (ANDing value with ROM data)
             let final_value = value & rom_value;
             
-            if self.chr_banks > 0 { // Fixed: Prevent crash if chr_banks is 0
-                self.chr_bank = final_value % (self.chr_banks as u8); // Fixed: Cast mismatch
+            if self.chr_banks > 0 {
+                self.chr_bank = final_value % (self.chr_banks as u8);
             }
         }
     }
@@ -69,9 +69,8 @@ impl Mapper for Mapper3 {
 
         if addr < 0x2000 {
             if self.chr_banks == 0 {
-                return self.chr_ram[addr as usize]; // Fixed: Added CHR-RAM fallback support
+                return self.chr_ram[addr as usize];
             } else {
-                // Fixed: Safe type casting and proper bank math structure
                 let bank = self.chr_bank as usize % self.chr_banks;
                 let mapped = (bank * 0x2000) + addr as usize;
                 return self.chr_rom[mapped];

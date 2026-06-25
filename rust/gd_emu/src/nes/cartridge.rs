@@ -20,4 +20,8 @@ impl Cartridge {
             has_battery: false,
         }
     }
+    pub fn get_sram(&self) -> Option<&[u8]> { self.mapper.get_sram() }
+    pub fn load_sram(&mut self, data: &[u8]) { self.mapper.load_sram(data); }
+    pub fn is_sram_dirty(&self) -> bool { self.mapper.is_sram_dirty() }
+    pub fn clear_sram_dirty(&mut self) { self.mapper.clear_sram_dirty(); }
 }

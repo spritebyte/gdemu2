@@ -2,6 +2,7 @@ extends Node
 
 var emu_system: Variant
 @onready var EmulatorScreen = %EmuDisplay
+@onready var ScreenContainer = %ScreenContainer
 @onready var file_dialog = $RomDialog
 @onready var file_menu = $MainVerticalStack/TopMenuBar/FileMenu
 @onready var emu_menu = $MainVerticalStack/TopMenuBar/EmulationMenu
@@ -50,6 +51,7 @@ func _ready() -> void:
 	audio_player.stream = audio_gen
 	add_child(audio_player)
 	audio_player.play()
+	print("EXACT SAVE PATH: ", OS.get_user_data_dir())
 
 func init_menus():
 	# FILE
@@ -136,7 +138,11 @@ func _process(_delta):
 	if emu_system and emu_system.is_frame_ready():
 		var tex_to_apply = emu_system.get_frame_texture()
 		if tex_to_apply:
-			EmulatorScreen.texture = tex_to_apply
+			if EmulatorScreen.texture is AtlasTexture:
+				EmulatorScreen.texture.atlas = tex_to_apply
+			else:
+				# Fallback if a frame arrives before setup_screen executes
+				EmulatorScreen.texture = tex_to_apply
 
 func _get_serialized_input() -> int:
 	var mask = 0x00
@@ -235,6 +241,11 @@ func execute_load(path: String, internal_zip_file: String = "") -> void:
 		var playback = audio_player.get_stream_playback()
 		emu_system.set_audio_playback(playback)
 		cpu_thread.start(Callable(self, "_thread_loop"))
+		var display_info = emu_system.get_display_info()
+		if display_info:
+			setup_screen(display_info)
+		else:
+			print("Could not get display info")
 	else:
 		OS.alert("Could not load ROM: %s" % path.get_file())
 
@@ -244,3 +255,21 @@ func _notification(what):
 			emu_system.power_off()
 		stop_emulation()
 		get_tree().quit()
+
+func setup_screen(display_info: SystemDisplayInfo):
+	# 1. Update the AtlasTexture cropping window using Rust's safe area
+	var atlas = EmulatorScreen.texture as AtlasTexture
+	if not atlas:
+		atlas = AtlasTexture.new()
+		# Wrap whatever texture was already there (if any)
+		atlas.atlas = EmulatorScreen.texture 
+		EmulatorScreen.texture = atlas
+	atlas.region = Rect2(
+		display_info.visible_x, 
+		display_info.visible_y, 
+		display_info.visible_width, 
+		display_info.visible_height
+	)
+	
+	# 2. Tell the container what shape the game is supposed to be
+	ScreenContainer.ratio = display_info.target_aspect_ratio

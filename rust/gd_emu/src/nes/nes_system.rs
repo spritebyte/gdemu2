@@ -6,6 +6,7 @@ use crate::nes::cartridge::Cartridge;
 use crate::nes::mapper1::Mapper1;
 use crate::nes::mapper2::Mapper2;
 use crate::nes::mapper3::Mapper3;
+use crate::nes::mapper4::Mapper4;
 use crate::nes::mapper7::Mapper7;
 use crate::nes::mapper9::Mapper9;
 
@@ -34,11 +35,49 @@ pub struct NesSystem {
     is_running: Arc<AtomicBool>,
     save_battery_path: String,
     save_filename: String,
+    sys_display: Gd<SystemDisplayInfo>,
     playback: Option<Gd<AudioStreamGeneratorPlayback>>,
+}
+
+#[derive(godot::prelude::GodotClass)]
+#[class(base=RefCounted, no_init)]
+pub struct SystemDisplayInfo {
+    // The literal dimensions of the raw texture array/Vec<u8>
+    #[export] pub buffer_width: i32,
+    #[export] pub buffer_height: i32,
+
+    // The sub-rectangle that players should actually see (handles overscan)
+    #[export] pub visible_x: i32,
+    #[export] pub visible_y: i32,
+    #[export] pub visible_width: i32,
+    #[export] pub visible_height: i32,
+
+    // The intended output aspect ratio (e.g., 4.0/3.0 for NES, 3.0/4.0 for DK)
+    #[export] pub target_aspect_ratio: f32,
+}
+
+#[godot_api]
+impl SystemDisplayInfo {
+    fn new() -> Self {
+        SystemDisplayInfo {
+            buffer_width: 256,
+            buffer_height: 240,
+            visible_x: 0,
+            visible_y: 8,
+            visible_width: 256,
+            visible_height: 224,
+            target_aspect_ratio: 4.0/3.0,
+        }
+    }
 }
 
 #[godot_api]
 impl NesSystem {
+    #[func]
+    pub fn get_display_info(&self) -> Gd<SystemDisplayInfo> {
+        self.sys_display.clone()
+    }
+
     #[func]
     pub fn create_from_bytes(rom_bytes: PackedByteArray, base_name: String) -> Option<Gd<Self>> {
         // Validate header and get sizes
@@ -80,6 +119,7 @@ impl NesSystem {
         godot_print!("prg_rom size: {prg_rom_size} ");
         godot_print!("chr_rom size: {chr_rom_size} ");
 
+
         Some(Gd::from_init_fn(|_base| {
             Self {
                 cpu: M6502Cpu::new(CpuVariant::Ricoh2A03),
@@ -89,6 +129,7 @@ impl NesSystem {
                 is_running: Arc::new(AtomicBool::new(false)),
                 save_battery_path: "user://GD_EMU/NES/Save".to_string(),
                 playback: None,
+                sys_display: Gd::from_object(SystemDisplayInfo::new()),
             }
         }))
     }
@@ -117,11 +158,19 @@ impl NesSystem {
         let ppu_mut = self.bus.ppu.get_mut();
         let apu_mut = self.bus.apu.get_mut();
         while cycles_this_frame < 29780 {
+            if self.bus.cartridge.mapper.check_irq() && !self.cpu.is_interrupt_disabled() {
+                self.cpu.trigger_irq(&mut self.bus);
+                self.tick_components(7);
+                cycles_this_frame += 7;
+            }
             let cycles = self.cpu.step(&mut self.bus);
-            let mapper_ref = &*self.bus.cartridge.mapper;
-            self.bus.ppu.get_mut().step(mapper_ref, (cycles * 3) as u32);
-            self.bus.apu.get_mut().step(cycles as u32);
+            self.tick_components(cycles as u32);
             cycles_this_frame += cycles as u16;
+            if self.bus.dma_cycles > 0 {
+                let dma_penalty = self.bus.dma_cycles;
+                self.tick_components(dma_penalty as u32);
+                self.bus.dma_cycles = 0;
+            }
         }
         let samples = self.bus.apu.get_mut().take_audio_samples();
         if !samples.is_empty() {
@@ -134,18 +183,33 @@ impl NesSystem {
         }
     }
 
+    fn tick_components(&mut self, cycles: u32) {
+        let mapper_ref = &mut *self.bus.cartridge.mapper; 
+        self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
+        self.bus.apu.get_mut().step(cycles);
+        self.bus.total_cpu_cycles += cycles as u64;
+    }
+
     #[func]
     pub fn power_on(&mut self, mut audio_player: Gd<AudioStreamPlayer>) {
         self.cpu.power_on(&self.bus);
         self.is_running.store(true, Ordering::SeqCst);
         let _playback = audio_player.get_stream_playback();
-        // bus.mapper.load_sram(&self.save_battery_path);
         let lo = self.bus.read_byte(0xFFFC);
         let hi = self.bus.read_byte(0xFFFD);
         godot_print!(
         "CPU Powering On:\n\
          - Reset Vector Bytes: [$FFFC] = 0x{:02X}, [$FFFD] = 0x{:02X}\n\
          - Initial Program Counter (PC): 0x{:04X}", lo, hi, self.cpu.pc);
+        let save_path = format!("{}/{}.sav", self.save_battery_path, self.save_filename);
+        if self.bus.cartridge.has_battery && godot::classes::FileAccess::file_exists(&save_path) {
+            if let Some(mut file) = godot::classes::FileAccess::open(&save_path, godot::classes::file_access::ModeFlags::READ) {
+                let file_length = file.get_length() as i64;
+                let buffer = file.get_buffer(file_length);
+                self.bus.load_sram(buffer.as_slice());
+                godot_print!("SRAM loaded successfully during power_on.");
+            }
+        } else { println!("File doesn't exist at {save_path}"); }
         println!("NES System Power On: Audio streams mapped and SRAM components pulled into RAM.");
     }
     
@@ -153,7 +217,7 @@ impl NesSystem {
     pub fn power_off(&mut self) {
         self.is_running.store(false, Ordering::SeqCst);
         self.cpu.is_running = false;
-//        self.bus.mapper.save_sram(SaveBatteryPath);
+        self.check_and_save_sram();
         println!("NES System Power Off: Battery backed SRAM saved to persistent disk space safely.");
     }
 
@@ -162,6 +226,34 @@ impl NesSystem {
         self.bus.ppu.get_mut().reset();
         self.cpu.reset(&self.bus);
             // self.bus.reset_ram();
+    }
+
+    #[func]
+    pub fn check_and_save_sram(&mut self) {
+        // If the mapper says no writes have happened to $6000-$7FFF, exit instantly.
+        // This makes the function call practically free 99.9% of the time.
+        if !self.bus.is_sram_dirty() {
+            return;
+        }
+
+        if let Some(sram_bytes) = self.bus.get_sram() {
+            if !godot::classes::DirAccess::dir_exists_absolute(&self.save_battery_path) {
+                godot::classes::DirAccess::make_dir_recursive_absolute(&self.save_battery_path);
+                godot_print!("Created missing save directory: {}", self.save_battery_path);
+            }
+            let save_path = format!("{}/{}.sav", self.save_battery_path, self.save_filename);
+            if let Some(mut file) = godot::classes::FileAccess::open(&save_path, godot::classes::file_access::ModeFlags::WRITE) {
+//                let mut packed_array = PackedByteArray::new();
+//                packed_array.extend_from_slice(sram_bytes);
+                let packed_array = PackedByteArray::from(&sram_bytes[..]);
+                file.store_buffer(&packed_array);
+                
+                // Reset the flag so we don't save again until the game modifies SRAM again
+                self.bus.clear_sram_dirty(); 
+                godot_print!("SRAM auto-flushed to disk safely.");
+            }
+            else { println!("Couldn't open file for saving at {save_path}") }
+        }
     }
 
     #[func]
@@ -198,11 +290,12 @@ impl NesSystem {
     // A factory function that maps an integer ID to a concrete Rust struct
     fn instantiate_mapper(mapper_id: u8, prg_rom: Vec<u8>, chr_rom: Vec<u8>, header:Vec<u8>) -> Option<Box<dyn Mapper>> {
         // Calculate the number of 16KB PRG banks and 8KB CHR banks
-        let prg_banks = prg_rom.len() / 16384;
-        let chr_banks = chr_rom.len() / 8192;
+        let mut prg_banks = prg_rom.len() / 16384;
+        let mut chr_banks = chr_rom.len() / 8192;
 
         let mirroring_bit = (header[6] & 0x01) != 0;
         let four_screen_bit = (header[6] & 0x08) != 0;
+        if mapper_id == 4 { prg_banks = prg_rom.len() / 0x2000; chr_banks = chr_rom.len() / 0x0400; }
 
         match mapper_id {
             0 => { let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
@@ -223,6 +316,11 @@ impl NesSystem {
                 godot_print!("Mapper3 (CNROM) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper3::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            }
+            4 => { // MMC3
+                godot_print!("Mapper4 (MMC3) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper4::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             }
             7 => { // AxROM
                 godot_print!("Mapper7 (AxROM) created");

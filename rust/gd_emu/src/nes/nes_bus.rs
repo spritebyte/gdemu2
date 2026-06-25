@@ -17,6 +17,8 @@ pub struct NesBus {
     pub pad1_state: u8,
     pub pad1_shift_reg: Cell<u8>,
     pub pad_strobe: bool,
+    pub dma_cycles: u32,
+    pub total_cpu_cycles: u64,
 }
 
 unsafe impl Send for NesBus {}
@@ -32,8 +34,14 @@ impl NesBus {
             pad1_state: 0,
             pad1_shift_reg: Cell::new(0),
             pad_strobe: false,
+            dma_cycles: 0,
+            total_cpu_cycles: 0,
         }
     }
+    pub fn get_sram(&self) -> Option<&[u8]> { self.cartridge.get_sram() }
+    pub fn load_sram(&mut self, data: &[u8]) { self.cartridge.load_sram(data); }
+    pub fn is_sram_dirty(&self) -> bool { self.cartridge.is_sram_dirty() }
+    pub fn clear_sram_dirty(&mut self) { self.cartridge.clear_sram_dirty(); }
 }
 
 impl AddressBus for NesBus {
@@ -83,6 +91,12 @@ impl AddressBus for NesBus {
                 }
 
                 self.ppu.get_mut().write_oam_dma(&dma_buffer);
+
+                let mut cycles_to_burn = 513;
+                if self.total_cpu_cycles % 2 != 0 {
+                    cycles_to_burn += 1;
+                }
+                self.dma_cycles += cycles_to_burn;
             }
             0x4016 => {
                 self.pad_strobe = (value & 0x01) == 0x01;

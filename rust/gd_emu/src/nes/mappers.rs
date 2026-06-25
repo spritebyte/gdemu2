@@ -6,6 +6,13 @@ pub trait Mapper {
     fn mirror_vram_address(&self, addr: u16) -> usize;
     fn is_irq_asserted(&self) -> bool { false }
     fn update_cycles(&mut self, _cycles: u64) {}
+    fn get_sram(&self) -> Option<&[u8]> { None }
+    fn load_sram(&mut self, _data: &[u8]) {}
+    fn is_sram_dirty(&self) -> bool { false }
+    fn clear_sram_dirty(&mut self) {}
+    fn check_irq(&self) -> bool { false }
+    fn check_a12(&self, _addr: u16) {}
+    fn clock_scanline(&mut self) {}
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -23,6 +30,7 @@ pub struct Mapper0 {
     mirroring_mode: Mirroring,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
+    prg_ram: Vec<u8>,
 }
 
 impl Mapper0 {
@@ -32,20 +40,34 @@ impl Mapper0 {
             mirroring_mode: initial_mirroring,
             prg_rom,
             chr_rom,
+            prg_ram: vec![0; 8192],
         }
     }
 }
 
 impl Mapper for Mapper0 {
     fn cpu_read(&self, addr: u16) -> u8 {
+        if addr < 0x8000 {
+            if addr >= 0x6000 {
+                return self.prg_ram[(addr - 0x6000) as usize];
+            }
+            return 0;
+        }
         let mut rom_addr = addr - 0x8000;
         if self.prg_rom.len() == 16384 {
             rom_addr %= 16384; // Mirroring for 16KB games
         }
         self.prg_rom[rom_addr as usize]
     }
-    fn cpu_write(&mut self, _addr: u16, _value: u8) {
-        // NROM is read-only!
+    fn cpu_write(&mut self, addr: u16, value: u8) {
+        if addr < 0x8000 {
+            if addr >= 0x6000 {
+                // Write to the 8KB PRG RAM area
+                self.prg_ram[(addr - 0x6000) as usize] = value;
+            }
+            return;
+        }
+        // ignore writes above $8000 for Mapper 0 since prg-rom is read-only.
     }
     fn ppu_read(&self, addr: u16) -> u8 {
         self.chr_rom[addr as usize]
