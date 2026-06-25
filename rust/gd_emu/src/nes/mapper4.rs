@@ -185,13 +185,13 @@ impl Mapper for Mapper4 {
             self.irq_counter.set(self.irq_counter.get() - 1);
         }
 
-        if self.irq_counter.get() == 0 {
+        if self.irq_counter.get() == 0 && self.irq_enabled.get() {
             self.irq_active.set(true);
         }
     }
 
     // Helper to monitor the PPU A12 line for scanline counter tracking
-    fn check_a12(&self, addr: u16) {
+/*    fn check_a12(&self, addr: u16) {
         let a12 = ((addr & 0x1000) >> 12) as u8;
         let old_a12 = self.last_a12.get();
 
@@ -220,7 +220,7 @@ impl Mapper for Mapper4 {
 
         self.last_a12.set(a12);
     }
-
+*/
     fn ppu_read(&self, p_addr: u16) -> u8 {
         let addr = p_addr & 0x3FFF;
 

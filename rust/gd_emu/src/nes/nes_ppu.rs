@@ -62,6 +62,7 @@ pub struct NesPPU {
     
     // Direct shared reference to the system's atomic sync flag
     system_frame_ready: Arc<AtomicBool>,
+    total_ppu_cycles: u64,
 }
 
 impl NesPPU {
@@ -78,6 +79,7 @@ impl NesPPU {
             back_buffer: vec![0; buffer_size],
             front_buffer: Arc::new(vec![0; buffer_size]),
             system_frame_ready,
+            total_ppu_cycles:0,
         }
     }
 
@@ -131,6 +133,7 @@ pub fn step(&mut self, mapper: &mut dyn Mapper, cycles: u32) {
                 // ---- VBLANK START SCANLINE ----
                 if self.cycle == 1 {
                     self.status |= 0x80;
+                    godot_print!("VBlank set at scanline 241, total_cycles={}", self.total_ppu_cycles);
                 }
             }
             242..=260 => {
@@ -171,6 +174,7 @@ pub fn step(&mut self, mapper: &mut dyn Mapper, cycles: u32) {
 
         // ---- ADVANCE PPU CLOCK DOTS ----
         self.cycle += 1;
+        self.total_ppu_cycles += 1;
         if self.cycle >= 341 {
             self.cycle = 0;
             self.scanline += 1;
@@ -521,7 +525,7 @@ fn rendering_enabled(&self) -> bool {
     pub fn ppu_write(&mut self, mapper: &mut dyn crate::nes::mappers::Mapper, mut addr: u16, value: u8) {
         addr &= 0x3FFF;
 
-        mapper.check_a12(addr);
+//        mapper.check_a12(addr);
 
         match addr {
             0x0000..=0x1FFF => {

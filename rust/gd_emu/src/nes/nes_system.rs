@@ -155,8 +155,6 @@ impl NesSystem {
         self.bus.pad1_state = nes_pad_state;
 
         let mut cycles_this_frame:u16 = 0;
-        let ppu_mut = self.bus.ppu.get_mut();
-        let apu_mut = self.bus.apu.get_mut();
         while cycles_this_frame < 29780 {
             if self.bus.cartridge.mapper.check_irq() && !self.cpu.is_interrupt_disabled() {
                 self.cpu.trigger_irq(&mut self.bus);

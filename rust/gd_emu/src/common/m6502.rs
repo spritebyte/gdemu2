@@ -391,10 +391,10 @@ impl M6502Cpu {
             0x85 => { let addr = self.get_operand_address(bus, AddressingMode::ZeroPage); bus.write_byte(addr, self.a); self.last_cycles = 3; }
             0x95 => { let addr = self.get_operand_address(bus, AddressingMode::ZeroPageX); bus.write_byte(addr, self.a); self.last_cycles = 4; }
             0x8D => { let addr = self.get_operand_address(bus, AddressingMode::Absolute); bus.write_byte(addr, self.a); self.last_cycles = 4; }
-            0x9D => { let addr = self.get_operand_address(bus, AddressingMode::AbsoluteX); bus.write_byte(addr, self.a); self.last_cycles = 5; }
-            0x99 => { let addr = self.get_operand_address(bus, AddressingMode::AbsoluteY); bus.write_byte(addr, self.a); self.last_cycles = 5; }
+            0x9D => { self._op_indexed_store(bus, AddressingMode::AbsoluteX, self.a); }
+            0x99 => { self._op_indexed_store(bus, AddressingMode::AbsoluteY, self.a); }
             0x81 => { let addr = self.get_operand_address(bus, AddressingMode::IndirectX); bus.write_byte(addr, self.a); self.last_cycles = 6; }
-            0x91 => { let addr = self.get_operand_address(bus, AddressingMode::IndirectY); bus.write_byte(addr, self.a); self.last_cycles = 6; }
+            0x91 => { self._op_indexed_store(bus, AddressingMode::IndirectY, self.a); }
 
             // Stack instructions
             // 0x9A=TXS, 0xBA=TSX, 0x48=PHA, 0x68=PLA, 0x08=PHP, 0x28=PLP
@@ -651,6 +651,52 @@ impl M6502Cpu {
         let shifted = value >> 1;
         bus.write_byte(addr, shifted);
         self.update_z_n_flags(shifted);
+    }
+
+    fn _op_indexed_store(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode, val_to_write: u8) {
+        match p_addressing_mode {
+            AddressingMode::AbsoluteX => {
+                let base: u16 = bus.read_word(self.pc);
+                self.pc = (self.pc + 2) & 0xFFFF;
+                let addr: u16 = base.wrapping_add(self.x as u16);
+                
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+                
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 5;
+            }
+            AddressingMode::AbsoluteY => {
+                let base: u16 = bus.read_word(self.pc);
+                self.pc = (self.pc + 2) & 0xFFFF;
+                let addr: u16 = base.wrapping_add(self.y as u16);
+                
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+                
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 5;
+            }
+            AddressingMode::IndirectY => {
+                let ptr = bus.read_byte(self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+    
+                let lo = bus.read_byte(ptr) as u16;
+                let hi = bus.read_byte(((ptr as u8).wrapping_add(1)) as u16) as u16;
+                let base = (hi << 8) | lo;
+                let addr = base.wrapping_add(self.y as u16);
+
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 6;
+            }
+            _ => {}
+        }
     }
 
     fn op_ora(&mut self,bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode) -> u8 {
@@ -987,8 +1033,8 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFA) as u16;
         let hi = bus.read_byte(0xFFFB) as u16;
         self.pc = (hi << 8) | lo;
-//       let current_sp=self.sp;
-//        println!("({}): NMI triggered. SP={current_sp}", self.total_cycles);
+       let current_sp=self.sp;
+        println!("({}): NMI triggered. SP={current_sp}", self.total_cycles);
         7
     }
 
@@ -1000,8 +1046,8 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFE) as u16;
         let hi = bus.read_byte(0xFFFF) as u16;
         self.pc = (hi << 8) | lo;
-//        let current_sp=self.sp;
-//        println!("({}): IRQ triggered. SP={current_sp}", self.total_cycles);
+        let current_sp=self.sp;
+        println!("({}): IRQ triggered. SP={current_sp}", self.total_cycles);
         7
     }
 }

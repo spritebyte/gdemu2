@@ -11,7 +11,7 @@ pub trait Mapper {
     fn is_sram_dirty(&self) -> bool { false }
     fn clear_sram_dirty(&mut self) {}
     fn check_irq(&self) -> bool { false }
-    fn check_a12(&self, _addr: u16) {}
+//    fn check_a12(&self, _addr: u16) {}
     fn clock_scanline(&mut self) {}
 }
 
@@ -69,12 +69,18 @@ impl Mapper for Mapper0 {
         }
         // ignore writes above $8000 for Mapper 0 since prg-rom is read-only.
     }
+
     fn ppu_read(&self, addr: u16) -> u8 {
-        self.chr_rom[addr as usize]
+        if self.chr_rom.len() > 0 {
+            return self.chr_rom[addr as usize];
+        }
+        0
     }
+
     fn ppu_write(&mut self, addr: u16, value: u8) {
         // handle chr_ram writes or modifications if needed
     }
+
     fn mirror_vram_address(&self, addr: u16) -> usize {
         let normalized = (addr & 0x0FFF) as usize; // Map $2000-$2FFF to $000-$FFF
         match self.mirroring_mode {
