@@ -1,9 +1,15 @@
 use crate::nes::mappers::{Mapper, Mirroring};
 use std::cell::Cell;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mmc3Revision {
+    RevA,
+    RevB,
+}
+
 // Mapper 4 (MMC3)
 pub struct Mapper4 {
-    prg_banks: usize,
+    prg_banks: usize, // Stored as count of 8KB banks
     chr_banks: usize,
     bank_registers: [usize; 8],
     bank_select: u8,
@@ -12,7 +18,7 @@ pub struct Mapper4 {
     prg_offsets: [usize; 4],
     chr_offsets: [usize; 8],
     
-    // Scanline IRQ counter fields wrapped in Cell for interior mutability in ppu_read
+    // Scanline IRQ counter fields wrapped in Cell for interior mutability
     last_a12: Cell<u8>,
     a12_low_counter: Cell<u32>,
     irq_counter: Cell<u8>,
@@ -20,7 +26,9 @@ pub struct Mapper4 {
     irq_reload_flag: Cell<bool>,
     irq_enabled: Cell<bool>,
     irq_active: Cell<bool>,
+    last_clock_cycle: Cell<i64>,
     
+    revision: Mmc3Revision, // Distinguish between Rev A and Rev B timing
     mirroring_mode: Mirroring,
     has_four_screen: bool,
     prg_rom: Vec<u8>,
@@ -36,8 +44,11 @@ impl Mapper4 {
         let prg_ram = vec![0; 8192];
         let chr_ram = if chr_banks == 0 { vec![0; 8192] } else { vec![] };
 
+        // Robustly determine the actual number of 8KB PRG banks from the ROM size.
+        let prg_banks_8kb = prg_rom.len() / 8192;
+
         let mut mapper = Self {
-            prg_banks,
+            prg_banks: prg_banks_8kb,
             chr_banks,
             bank_registers: [0; 8],
             bank_select: 0,
@@ -52,6 +63,8 @@ impl Mapper4 {
             irq_enabled: Cell::new(false),
             irq_active: Cell::new(false),
             last_a12: Cell::new(0),
+            last_clock_cycle: Cell::new(0),
+            revision: Mmc3Revision::RevB, // Default to standard Rev B
             mirroring_mode: initial_mirroring,
             has_four_screen: four_screen_bit,
             prg_rom,
@@ -66,6 +79,11 @@ impl Mapper4 {
         mapper
     }
 
+    /// Set the specific MMC3 hardware revision (useful for passing specific test ROMs)
+    pub fn set_revision(&mut self, revision: Mmc3Revision) {
+        self.revision = revision;
+    }
+    
     fn update_offsets(&mut self) {
         let last = self.prg_banks - 1;
         let second_last = self.prg_banks - 2;
@@ -140,7 +158,6 @@ impl Mapper for Mapper4 {
                 self.update_offsets();
             } else {
                 // $8001: Bank Register Data write
-//                println!("MMC3 Write: {:04X} = {:02X}", addr, value);
                 self.bank_registers[self.bank_select as usize] = value as usize;
                 self.update_offsets();
             }
@@ -179,49 +196,33 @@ impl Mapper for Mapper4 {
     }
 
     fn clock_scanline(&mut self) {
-        if self.irq_counter.get() == 0 || self.irq_reload_flag.get() {
+        let current_counter = self.irq_counter.get();
+        let is_reload = current_counter == 0 || self.irq_reload_flag.get();
+
+        if is_reload {
             self.irq_counter.set(self.irq_latch.get());
             self.irq_reload_flag.set(false);
         } else {
-            self.irq_counter.set(self.irq_counter.get() - 1);
+            self.irq_counter.set(current_counter.saturating_sub(1));
         }
 
-        if self.irq_counter.get() == 0 && self.irq_enabled.get() {
-            self.irq_active.set(true);
-        }
-    }
-
-    // Helper to monitor the PPU A12 line for scanline counter tracking
-/*    fn check_a12(&self, addr: u16) {
-        let a12 = ((addr & 0x1000) >> 12) as u8;
-        let old_a12 = self.last_a12.get();
-
-        if a12 == 0 {
-            // Track consecutive PPU bus reads where A12 is low (Nametable phases)
-            self.a12_low_counter.set(self.a12_low_counter.get() + 1);
-        } 
-        else if a12 == 1 && old_a12 == 0 {
-            // Glitch Filter: Only clock the counter if A12 was safely low for a minimum 
-            // sequence of reads (prevents rapid tile evaluation spikes from over-clocking)
-            if self.a12_low_counter.get() >= 3 {
-                if self.irq_counter.get() == 0 || self.irq_reload_flag.get() {
-                    self.irq_counter.set(self.irq_latch.get());
-                    self.irq_reload_flag.set(false);
-                } else {
-                    self.irq_counter.set(self.irq_counter.get() - 1);
+        // --- REVISION SENSITIVE IRQ LOGIC ---
+        match self.revision {
+            Mmc3Revision::RevA => {
+                // Rev A: Only trigger IRQ if we decremented to 0. Reloading with 0 does NOT trigger IRQ.
+                if !is_reload && self.irq_counter.get() == 0 && self.irq_enabled.get() {
+                    self.irq_active.set(true);
                 }
-
+            }
+            Mmc3Revision::RevB => {
+                // Rev B/C: Trigger IRQ if the counter is exactly 0 after the step (even on reload).
                 if self.irq_counter.get() == 0 && self.irq_enabled.get() {
                     self.irq_active.set(true);
                 }
             }
-            // Reset the counter since A12 has transitioned to high
-            self.a12_low_counter.set(0);
         }
-
-        self.last_a12.set(a12);
     }
-*/
+
     fn ppu_read(&self, p_addr: u16) -> u8 {
         let addr = p_addr & 0x3FFF;
 

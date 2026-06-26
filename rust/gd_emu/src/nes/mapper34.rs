@@ -28,14 +28,18 @@ impl Mapper34 {
         let chr_ram = if chr_banks == 0 { vec![0; 8192] } else { vec![] };
         let chr_rom_size = chr_rom.len();
         let prg_bank_count = prg_rom.len() / 0x8000; // 32KB banks
-
+        let fixed_mirroring = match submapper {
+            1 => Mirroring::Vertical,
+            2 => Mirroring::Horizontal,
+            _ => if chr_banks > 1 { Mirroring::Vertical } else {Mirroring::Horizontal }
+        };
         Self {
             prg_banks,
             prg_bank_count,
             prg_bank: 0,
             chr_banks,
             chr_rom_size,
-            mirroring_mode: initial_mirroring,
+            mirroring_mode: fixed_mirroring,
             has_four_screen: four_screen_bit,
             submapper,
             prg_rom,
@@ -72,13 +76,7 @@ impl Mapper for Mapper34 {
     fn cpu_write(&mut self, addr: u16, value: u8) {
         if addr < 0x8000 { return; }
 
-        self.prg_bank = value & 0x07;
-
-        if (value & 0x10) == 0 {
-            self.mirroring_mode = Mirroring::SingleLower;
-        } else {
-            self.mirroring_mode = Mirroring::SingleUpper;
-        }
+        self.prg_bank = (value & 0x07) % self.prg_banks as u8;
     }
 
     fn ppu_read(&self, p_addr: u16) -> u8 {
@@ -87,7 +85,6 @@ impl Mapper for Mapper34 {
         if addr < 0x2000 {
             return self._chr_read(addr as usize);
         }
-
         0
     }
 

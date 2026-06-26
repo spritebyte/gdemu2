@@ -11,7 +11,7 @@ pub trait Mapper {
     fn is_sram_dirty(&self) -> bool { false }
     fn clear_sram_dirty(&mut self) {}
     fn check_irq(&self) -> bool { false }
-//    fn check_a12(&self, _addr: u16) {}
+    fn check_a12(&self, _addr: u16) {}
     fn clock_scanline(&mut self) {}
 }
 

@@ -64,9 +64,9 @@ impl SystemDisplayInfo {
         SystemDisplayInfo {
             buffer_width: 256,
             buffer_height: 240,
-            visible_x: 0,
+            visible_x: 8,
             visible_y: 8,
-            visible_width: 256,
+            visible_width: 240,
             visible_height: 224,
             target_aspect_ratio: 4.0/3.0,
         }

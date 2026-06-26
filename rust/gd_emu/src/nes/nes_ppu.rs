@@ -46,7 +46,7 @@ pub struct NesPPU {
     pub t_addr: u16,  // Temporary internal address latch
 
     // memory blocks
-    pub vram: [u8; 2048],
+    pub vram: [u8; 4096],
     pub palette_ram: [u8; 32],
     pub oam: [u8; 256], // 64 sprites * 4 bytes each
     data_buffer: u8,    // Delayed reading cache buffer for PPUDATA ($2007)
@@ -75,7 +75,7 @@ impl NesPPU {
             sprite_pattern_table: 0x0, background_pattern_table: 0x0, sprite_size: 8,
             frame_ready: false, scanline: 0, cycle: 0, w_latch: false, fine_x: 0,
             v_addr: 0, t_addr: 0, data_buffer: 0,
-            vram: [0;2048], palette_ram: [0;32], oam: [0;256],
+            vram: [0;4096], palette_ram: [0;32], oam: [0;256],
             scanline_bg: [(0, 0, 0); 33], scanline_sprites: Vec::with_capacity(8),
             back_buffer: vec![0; buffer_size],
             front_buffer: Arc::new(vec![0; buffer_size]),
@@ -519,7 +519,7 @@ fn rendering_enabled(&self) -> bool {
 
         match addr {
             0x0000..=0x1FFF => mapper.ppu_read(addr),
-            0x2000..=0x3EFF => self.vram[mapper.mirror_vram_address(addr) % 2048],
+            0x2000..=0x3EFF => self.vram[mapper.mirror_vram_address(addr)],
             0x3F00..=0x3FFF => {
                 let mut palette_addr = (addr & 0x001F) as usize;
                 if palette_addr >= 0x10 && (palette_addr % 4 == 0) { palette_addr -= 0x10; }
@@ -585,9 +585,6 @@ fn rendering_enabled(&self) -> bool {
     }
 
     pub fn cpu_write_reg(&mut self, mapper: &mut dyn crate::nes::mappers::Mapper, reg: u16, value: u8) {
-        if reg == 4 {
-            println!("CPU_WRITE_REG=4");
-        }
         match reg {
             0 => { // $2000 - PPUCTRL
                 let old_ctrl = self.ctrl;
@@ -622,22 +619,40 @@ fn rendering_enabled(&self) -> bool {
                 }
             }
             6 => { // $2006 - PPUADDR
+            
                 if self.w_latch == false {
                     // First write: High byte of the 14-bit destination target address
                     self.t_addr = (self.t_addr & 0x00FF) | (((value & 0x3F) as u16) << 8);
                     self.w_latch = true;
                 } else {
+                    let old_v = self.v_addr;
                     // Second write: Low byte of destination target address
                     self.t_addr = (self.t_addr & 0xFF00) | (value as u16);
                     self.v_addr = self.t_addr; // Latch copies address into current VRAM target
                     self.w_latch = false;
+
+                    // If Bit 12 transitioned from 0 to 1, and the PPU isn't actively rendering:
+                    let old_a12 = (old_v & 0x1000) != 0;
+                    let new_a12 = (self.v_addr & 0x1000) != 0;
+
+                    if !old_a12 && new_a12 && !self.rendering_enabled() {
+                        mapper.clock_scanline();
+                    }
                 }
             }
             7 => { // $2007 - PPUDATA
+                let old_v = self.v_addr;
                 // Write the value into the destination VRAM address
                 self.ppu_write(mapper, self.v_addr, value);
                 // Automatically step forward the target address based on $2000 setup configurations
                 self.v_addr = self.v_addr.wrapping_add(self.vram_increment as u16);
+
+                let old_a12 = (old_v & 0x1000) != 0;
+                let new_a12 = (self.v_addr & 0x1000) != 0;
+
+                if !old_a12 && new_a12 && !self.rendering_enabled() {
+                    mapper.clock_scanline();
+                }
             }
             _ => {}
         }
