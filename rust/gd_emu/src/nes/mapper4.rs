@@ -140,6 +140,7 @@ impl Mapper for Mapper4 {
                 self.update_offsets();
             } else {
                 // $8001: Bank Register Data write
+//                println!("MMC3 Write: {:04X} = {:02X}", addr, value);
                 self.bank_registers[self.bank_select as usize] = value as usize;
                 self.update_offsets();
             }

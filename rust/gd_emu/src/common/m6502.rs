@@ -372,8 +372,8 @@ impl M6502Cpu {
             // RTS
             0x60 => { self.pc = self._stack_pop16(bus).wrapping_add(1); self.last_cycles = 6; }
 
-            // SBC (Subtract with carry)
-            0xE9 => { self._op_sbc(bus, AddressingMode::Immediate); self.last_cycles = 2; }
+            // SBC (Subtract with carry), 0xEB is unofficial opcode
+            0xE9 | 0xEB => { self._op_sbc(bus, AddressingMode::Immediate); self.last_cycles = 2; }
             0xE5 => { self._op_sbc(bus, AddressingMode::ZeroPage); self.last_cycles = 3; }
             0xF5 => { self._op_sbc(bus, AddressingMode::ZeroPageX); self.last_cycles = 4; }
             0xED => { self._op_sbc(bus, AddressingMode::Absolute); self.last_cycles = 4; }
@@ -419,6 +419,19 @@ impl M6502Cpu {
             0x8C => { let addr = self.get_operand_address(bus, AddressingMode::Absolute); bus.write_byte(addr, self.y); self.last_cycles = 4; }
 
             // Unofficial opcodes
+            0x0B | 0x2B => {
+                // ANC Immediate
+                let val = self.get_operand_address(bus, AddressingMode::Immediate) as u8;
+                self.a &= val;                              // Perform bitwise AND with Accumulator
+    
+                // Update standard flags
+                self.update_z_n_flags(self.a);
+    
+                // ANC Specific Quirk: Copy Bit 7 of the result directly into the Carry flag
+                let carry = self.a & 0x80 != 0;
+                if carry { self.p.insert(Status::C); } else { self.p.remove(Status::C); }
+                self.last_cycles = 2;
+            }
             0x07 => { // SLO
                 self.op_slo(bus, AddressingMode::ZeroPage);
                 self.last_cycles = 5;
@@ -447,10 +460,21 @@ impl M6502Cpu {
                 self.op_slo(bus, AddressingMode::IndirectY);
                 self.last_cycles = 8;
             }
-            #[allow(unused_must_use)]
+
             0x33 => { 
-                self.rotate_left_memory(bus, AddressingMode::IndirectY);
-                self._op_and_a(bus, AddressingMode::IndirectY);
+                let addr = self.get_operand_address(bus, AddressingMode::IndirectY);
+                
+                // ROL Memory Step
+                let mut val = bus.read_byte(addr);
+                let old_carry = self.p.contains(Status::C) as u8;
+                if (val & 0x80) != 0 { self.p.insert(Status::C); } else { self.p.remove(Status::C); }
+                val = (val << 1) | old_carry;
+                bus.write_byte(addr, val);
+                
+                // AND step
+                self.a &= val;
+                self.update_z_n_flags(self.a);
+                
                 self.last_cycles = 8;
             }
             
@@ -480,10 +504,17 @@ impl M6502Cpu {
                 self.last_cycles = 4;
             }
 
-            0x80 | 0x82 | 0x89 | 0xC2 | 0xE2 | 0xCB => { self._read_pc(bus); self.last_cycles = 2; }
+            0x80 | 0x82 | 0x89 | 0xC2 | 0xE2 => { self._read_pc(bus); self.last_cycles = 2; }
             0x04 | 0x44 | 0x64 => { self._read_pc(bus); self.last_cycles = 3; }
             0x14 | 0x34 | 0x54 | 0x74 | 0xD4 | 0xF4 => { self._read_pc(bus); self.last_cycles = 4; }
-            0x0C | 0xFC | 0x1C | 0x3C | 0x5C | 0x7C | 0xDC => { self._read_pc16(bus); self.last_cycles = 4; }
+            0x0C | 0xFC | 0x1C | 0x3C | 0x5C | 0x7C | 0xDC => {
+                let mode = match opcode {
+                    0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => AddressingMode::AbsoluteX,
+                    _ => AddressingMode::Absolute
+                };
+                self.get_operand_address(bus, mode);
+                self.last_cycles = 4 + (self.operand_address_crossed_page as u32) as u8;
+            }
             0x02 | 0x12 | 0x1A | 0x22 | 0x32 | 0x3A | 0x42 | 0x52 | 0x5A => { self.last_cycles = 2; }
             0x62 | 0x72 | 0x7A | 0x92 | 0xB2 | 0xD2 | 0xDA | 0xF2 | 0xFA => { self.last_cycles = 2; }
 
@@ -880,12 +911,12 @@ impl M6502Cpu {
             }
             AddressingMode::ZeroPageX => {
                 let addr:u16 = bus.read_byte(self.pc).wrapping_add(self.x) as u16;
-                self.pc = (self.pc + 1) & 0xFFFF;
+                self.pc = self.pc.wrapping_add(1);
                 addr  
             }
             AddressingMode::ZeroPageY => {
                 let addr:u16 = bus.read_byte(self.pc).wrapping_add(self.y) as u16;
-                self.pc = (self.pc + 1) & 0xFFFF;
+                self.pc = self.pc.wrapping_add(1);
                 addr
             }
             AddressingMode::Absolute => {
@@ -895,14 +926,14 @@ impl M6502Cpu {
             }
             AddressingMode::AbsoluteX => {
                 let base:u16 = bus.read_word(self.pc);
-                self.pc = (self.pc + 2) & 0xFFFF;
+                self.pc = self.pc.wrapping_add(2);
                 let addr:u16 = base.wrapping_add(self.x as u16);
                 self.operand_address_crossed_page = (base & 0xFF00) != (addr & 0xFF00);
                 addr
             }
             AddressingMode::AbsoluteY => {
                 let base:u16 = bus.read_word(self.pc);
-                self.pc = (self.pc + 2) & 0xFFFF;
+                self.pc = self.pc.wrapping_add(2);
                 let addr:u16 = base.wrapping_add(self.y as u16);
                 self.operand_address_crossed_page = (base & 0xFF00) != (addr & 0xFF00);
                 addr
@@ -912,7 +943,7 @@ impl M6502Cpu {
                 self.pc = self.pc.wrapping_add(2);
                 let lo = bus.read_byte(ptr) as u16;
                 let hi = if (ptr & 0xFF) == 0xFF { bus.read_byte(ptr & 0xFF00) }
-                else { bus.read_byte(ptr + 1) } as u16;
+                else { bus.read_byte(ptr.wrapping_add(1) as u16) } as u16;
                 (hi << 8) | lo
             }
             AddressingMode::IndirectX => {
@@ -929,7 +960,7 @@ impl M6502Cpu {
                 self.pc = self.pc.wrapping_add(1);
     
                 let lo = bus.read_byte(ptr) as u16;
-                let hi = bus.read_byte(((ptr as u8).wrapping_add(1)) as u16) as u16;
+                let hi = bus.read_byte((ptr.wrapping_add(1)) as u16) as u16;
                 let base = (hi << 8) | lo;
     
                 let addr = base.wrapping_add(self.y as u16);

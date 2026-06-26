@@ -8,7 +8,8 @@ pub struct Mapper2 {
     chr_banks: usize,
     mirroring_mode: Mirroring,
     has_four_screen: bool,
-
+//    submapper: u8,
+    has_bus_conflicts: bool,
     prg_rom: Vec<u8>,
     prg_ram: Vec<u8>,
     chr_rom: Vec<u8>,
@@ -18,9 +19,10 @@ pub struct Mapper2 {
 }
 
 impl Mapper2 {
-    pub fn new(prg_banks: usize, chr_banks: usize, prg_rom: Vec<u8>, chr_rom: Vec<u8>, initial_mirroring: Mirroring, four_screen_bit: bool) -> Self {
+    pub fn new(prg_banks: usize, chr_banks: usize, prg_rom: Vec<u8>, chr_rom: Vec<u8>, initial_mirroring: Mirroring, four_screen_bit: bool, submapper: u8) -> Self {
         let prg_ram = vec![0; 8192];
         let chr_ram = if chr_banks == 0 { vec![0; 8192] } else { vec![] };
+        let has_bus_conflicts = if submapper == 0 || submapper == 2 { true } else { false };
 
         Self {
             prg_banks,
@@ -28,12 +30,32 @@ impl Mapper2 {
             chr_banks,
             mirroring_mode: initial_mirroring,
             has_four_screen: four_screen_bit,
+            has_bus_conflicts,
             prg_rom,
             prg_ram,
             chr_rom,
             chr_ram,
             current_cycle: 0,
             sram_dirty: false,
+        }
+    }
+
+    fn get_rom_index(&self, addr: u16) -> usize {
+        // Offset relative to start of PRG space ($8000)
+        let offset = (addr - 0x8000) as usize;
+
+        if addr < 0xC000 {
+            // $8000-$BFFF: Switchable bank (16 KB)
+            // Each bank is 0x4000 bytes. 
+            // Index = (Bank Number * Bank Size) + Offset within bank
+            (self.prg_bank as usize * 0x4000) + offset
+        } else {
+            // $C000-$FFFF: Fixed to the last bank
+            // Index = (Total Banks - 1) * Bank Size + Offset within bank
+            // Note: offset here is 0x4000–0x7FFF relative to $8000, 
+            // so we subtract 0x4000 to get the local offset (0–0x3FFF)
+            let local_offset = offset - 0x4000;
+            ((self.prg_banks - 1) * 0x4000) as usize + local_offset
         }
     }
 }
@@ -70,8 +92,16 @@ impl Mapper for Mapper2 {
     fn cpu_write(&mut self, addr: u16, value: u8) {
         if addr >= 0x8000 {
             let num_banks = self.prg_banks;
-//            println!("CPU_WRITE: {addr}, {value}. {num_banks}");
-            self.prg_bank = value % (self.prg_banks as u8);
+
+            if self.has_bus_conflicts {
+                let rom_value = self.prg_rom[self.get_rom_index(addr)];
+                let effective_value = value & rom_value;
+            //            println!("CPU_WRITE: {addr}, {value}. {num_banks}");
+//            self.prg_bank = value % (self.prg_banks as u8);
+                self.prg_bank = effective_value % num_banks as u8;
+            } else {
+                self.prg_bank = value % (num_banks as u8);
+            }
         }
     }
 

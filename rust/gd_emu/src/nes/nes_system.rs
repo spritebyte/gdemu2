@@ -9,6 +9,7 @@ use crate::nes::mapper3::Mapper3;
 use crate::nes::mapper4::Mapper4;
 use crate::nes::mapper7::Mapper7;
 use crate::nes::mapper9::Mapper9;
+use crate::nes::mapper34::Mapper34;
 use crate::nes::mapper206::Mapper206;
 
 use godot::prelude::*;
@@ -298,6 +299,7 @@ impl NesSystem {
         };
         let prg_banks = prg_rom.len() / prg_bank_size;
         let chr_banks = chr_rom.len() / chr_bank_size;
+        let submapper = 0;
 
         let mirroring_bit = (header[6] & 0x01) != 0;
         let four_screen_bit = (header[6] & 0x08) != 0;
@@ -315,7 +317,7 @@ impl NesSystem {
             2 => { // UxROM
                 godot_print!("Mapper2 (UxROM) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
-                Some(Box::new(Mapper2::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+                Some(Box::new(Mapper2::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit, submapper)))
             }
             3 => { // CNROM
                 godot_print!("Mapper3 (CNROM) created");
@@ -336,6 +338,11 @@ impl NesSystem {
                 godot_print!("Mapper9 (MMC2) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper9::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            }
+            34 => { //
+                godot_print!("Mapper34 () created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper34::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit, submapper)))
             } 
             206 => { // DxROM
                 godot_print!("Mapper206 (DxROM) created");

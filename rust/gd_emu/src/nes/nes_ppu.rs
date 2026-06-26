@@ -271,8 +271,11 @@ fn rendering_enabled(&self) -> bool {
     }
 
     fn render_pixel(&mut self, x: usize) {
-        if !self.rendering_enabled() {
-            // If rendering is disabled via PPUMASK ($2001), output the universal background color
+        let bg_show = (self.mask & 0x08) != 0;
+        let spr_show = (self.mask & 0x10) != 0;
+
+        if !bg_show && !spr_show {
+            // If rendering is totally disabled via PPUMASK ($2001), output the universal background color
             let color_idx = self.palette_ram[0];
             let (r, g, b) = NES_PALETTE[color_idx as usize];
             let pixel_index = (self.scanline as usize * 256 + x) * 4;
@@ -284,46 +287,51 @@ fn rendering_enabled(&self) -> bool {
         }
 
         // ---- 1. EXTRACT BACKGROUND PIXEL ----
-        // Fine X scrolling shifts our window into the 33 prefetched tiles
-        let total_offset = x + self.fine_x as usize;
-        let tile_idx = total_offset / 8;
-        let bit_shift = 7 - (total_offset % 8); // Bit 7 is the leftmost pixel of a byte
+        let mut bg_pixel = 0u8;
+        let mut bg_palette_idx = 0u8;
 
-        let (bg_low, bg_high, bg_palette_idx) = self.scanline_bg[tile_idx];
-        let bg_color_bit0 = (bg_low >> bit_shift) & 1;
-        let bg_color_bit1 = (bg_high >> bit_shift) & 1;
-        let bg_pixel = (bg_color_bit1 << 1) | bg_color_bit0; // Values 0..=3
+        // Only fetch background color if background rendering is enabled
+        if bg_show {
+            let total_offset = x + self.fine_x as usize;
+            let tile_idx = total_offset / 8;
+            let bit_shift = 7 - (total_offset % 8); 
+
+            let (bg_low, bg_high, p_idx) = self.scanline_bg[tile_idx];
+            bg_palette_idx = p_idx;
+            let bg_color_bit0 = (bg_low >> bit_shift) & 1;
+            let bg_color_bit1 = (bg_high >> bit_shift) & 1;
+            bg_pixel = (bg_color_bit1 << 1) | bg_color_bit0; 
+        }
 
         // ---- 2. EXTRACT SPRITE PIXEL ----
         let mut sprite_pixel = 0u8;
         let mut sprite_palette_idx = 0u8;
-        let mut sprite_priority = 0u8; // 0 = in front of BG, 1 = behind BG
+        let mut sprite_priority = 0u8; 
         let mut is_sprite_zero = false;
 
-        // Scan through the evaluated sprites for this line (max 8)
-        for sprite in &self.scanline_sprites {
-            let (s_idx, s_x, s_low, s_high, s_attr, s_is_zero) = *sprite;
-            let s_x = s_x as usize;
+        // Only evaluate sprites if sprite rendering is enabled
+        if spr_show {
+            for sprite in &self.scanline_sprites {
+                let (s_idx, s_x, s_low, s_high, s_attr, s_is_zero) = *sprite;
+                let s_x = s_x as usize;
 
-            // Check if this sprite covers the current X pixel
-            if x >= s_x && x < s_x + 8 {
-                let mut s_bit_shift = 7 - (x - s_x);
-                // Handle horizontal flipping
-                if (s_attr & 0x40) != 0 {
-                    s_bit_shift = x - s_x;
-                }
+                if x >= s_x && x < s_x + 8 {
+                    let mut s_bit_shift = 7 - (x - s_x);
+                    if (s_attr & 0x40) != 0 {
+                        s_bit_shift = x - s_x;
+                    }
 
-                let s_color_bit0 = (s_low >> s_bit_shift) & 1;
-                let s_color_bit1 = (s_high >> s_bit_shift) & 1;
-                let p_pixel = (s_color_bit1 << 1) | s_color_bit0;
+                    let s_color_bit0 = (s_low >> s_bit_shift) & 1;
+                    let s_color_bit1 = (s_high >> s_bit_shift) & 1;
+                    let p_pixel = (s_color_bit1 << 1) | s_color_bit0;
 
-                if p_pixel != 0 {
-                    // Found the topmost opaque sprite pixel
-                    sprite_pixel = p_pixel;
-                    sprite_palette_idx = s_attr & 0x03;
-                    sprite_priority = (s_attr >> 5) & 1;
-                    is_sprite_zero = s_is_zero;
-                    break; // First sprite in OAM wins the priority multiplexer
+                    if p_pixel != 0 {
+                        sprite_pixel = p_pixel;
+                        sprite_palette_idx = s_attr & 0x03;
+                        sprite_priority = (s_attr >> 5) & 1;
+                        is_sprite_zero = s_is_zero;
+                        break; 
+                    }
                 }
             }
         }
@@ -332,25 +340,21 @@ fn rendering_enabled(&self) -> bool {
         let bg_opaque = bg_pixel != 0;
         let spr_opaque = sprite_pixel != 0;
 
-        // Handle Sprite 0 Hit detection
-        if is_sprite_zero && bg_opaque && spr_opaque {
-            // Sprite 0 hit doesn't trigger if it happens at x=0..7 and clipping is active
+        // Handle Sprite 0 Hit detection (Requires BOTH layers to be showing actively)
+        if is_sprite_zero && bg_opaque && spr_opaque && bg_show && spr_show {
             let bg_clipped = (self.mask & 0x02) == 0 && x < 8;
             let spr_clipped = (self.mask & 0x04) == 0 && x < 8;
             if !bg_clipped && !spr_clipped && x < 255 {
-                self.status |= 0x40; // Sets Bit 6 of $2002
+                self.status |= 0x40; 
             }
         }
 
         // Determine whether background or sprite wins out
         let final_palette_offset = if spr_opaque && (!bg_opaque || sprite_priority == 0) {
-            // Sprite wins: maps to addresses $3F10 - $3F1F
             0x10 + (sprite_palette_idx as usize * 4) + sprite_pixel as usize
         } else if bg_opaque {
-            // Background wins: maps to addresses $3F00 - $3F0F
             (bg_palette_idx as usize * 4) + bg_pixel as usize
         } else {
-            // Both are transparent: Universal background color
             0x00
         };
 
@@ -557,6 +561,13 @@ fn rendering_enabled(&self) -> bool {
                 self.w_latch = false;    // And resets scroll/address double-write latch
                 res
             }
+            4 => {
+                let mut value = self.oam[self.oam_addr as usize];
+                if (self.oam_addr & 0x03) == 2 {
+                    value &= 0xE3; // Keeps bits 7, 6, 5, 1, 0
+                }
+                value
+            }
             7 => { // $2007 - PPUDATA
                 let mut data = self.ppu_read(mapper, self.v_addr);
                 if self.v_addr < 0x3F00 {
@@ -574,6 +585,9 @@ fn rendering_enabled(&self) -> bool {
     }
 
     pub fn cpu_write_reg(&mut self, mapper: &mut dyn crate::nes::mappers::Mapper, reg: u16, value: u8) {
+        if reg == 4 {
+            println!("CPU_WRITE_REG=4");
+        }
         match reg {
             0 => { // $2000 - PPUCTRL
                 let old_ctrl = self.ctrl;
@@ -590,6 +604,10 @@ fn rendering_enabled(&self) -> bool {
             }
             3 => { // $2003 - OAMADDR
                 self.oam_addr = value;
+            }
+            4 => { // $2004 - OAMDATA
+                self.oam[self.oam_addr as usize] = value;
+                self.oam_addr = self.oam_addr.wrapping_add(1);
             }
             5 => { // $2005 - PPUSCROLL
                 if self.w_latch == false {
