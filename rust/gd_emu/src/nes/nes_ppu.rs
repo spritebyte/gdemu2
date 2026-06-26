@@ -1,4 +1,5 @@
 use godot::prelude::*;
+use godot::global::godot_print;
 use godot::classes::ImageTexture;
 use crate::nes::mappers::Mapper;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -98,6 +99,7 @@ pub fn step(&mut self, mapper: &mut dyn Mapper, cycles: u32) {
                 // ---- VISIBLE SCANLINES ----
                 if self.cycle == 0 {
                     // Batch render background and sprites using current v_addr state
+//                    godot_print!("mask=0x{:02X}", self.mask);
                     self.prefetch_scanline(mapper);
                 }
 
@@ -132,8 +134,9 @@ pub fn step(&mut self, mapper: &mut dyn Mapper, cycles: u32) {
             241 => {
                 // ---- VBLANK START SCANLINE ----
                 if self.cycle == 1 {
+//                    godot_print!("palette_ram: {:02X?}", self.palette_ram);
                     self.status |= 0x80;
-                    godot_print!("VBlank set at scanline 241, total_cycles={}", self.total_ppu_cycles);
+//                    godot_print!("VBlank set at scanline 241, total_cycles={}", self.total_ppu_cycles);
                 }
             }
             242..=260 => {

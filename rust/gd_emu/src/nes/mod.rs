@@ -5,6 +5,7 @@ pub mod mapper3;
 pub mod mapper4;
 pub mod mapper7;
 pub mod mapper9;
+pub mod mapper206;
 pub mod nes_system;
 pub mod nes_bus;
 pub mod nes_apu;

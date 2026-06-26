@@ -250,6 +250,8 @@ impl NesAPU {
         if self.noise_length_counter > 0 { status |= 0x08; }
 
         if self.frame_irq_flag { status |= 0x40; }
+        
+        // Reading $4015 acknowledges and clears the Frame Counter IRQ flag!
         self.frame_irq_flag = false;
 
         status

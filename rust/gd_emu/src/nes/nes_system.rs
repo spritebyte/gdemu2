@@ -9,6 +9,7 @@ use crate::nes::mapper3::Mapper3;
 use crate::nes::mapper4::Mapper4;
 use crate::nes::mapper7::Mapper7;
 use crate::nes::mapper9::Mapper9;
+use crate::nes::mapper206::Mapper206;
 
 use godot::prelude::*;
 use godot::classes::{Node, AudioStreamGeneratorPlayback};
@@ -287,13 +288,19 @@ impl NesSystem {
 
     // A factory function that maps an integer ID to a concrete Rust struct
     fn instantiate_mapper(mapper_id: u8, prg_rom: Vec<u8>, chr_rom: Vec<u8>, header:Vec<u8>) -> Option<Box<dyn Mapper>> {
-        // Calculate the number of 16KB PRG banks and 8KB CHR banks
-        let mut prg_banks = prg_rom.len() / 16384;
-        let mut chr_banks = chr_rom.len() / 8192;
+        let prg_bank_size = match mapper_id {
+            4|206 => 8192,   // MMC3, DxROM: 8KB banks
+            _ => 16384,      // MMC, UxROM: 16KB banks
+        };
+        let chr_bank_size = match mapper_id {
+            4|206 => 1024,  // MMC3, DxROM: 1KB banks
+            _ => 8192,      // MMC, UxROM: 8KB banks
+        };
+        let prg_banks = prg_rom.len() / prg_bank_size;
+        let chr_banks = chr_rom.len() / chr_bank_size;
 
         let mirroring_bit = (header[6] & 0x01) != 0;
         let four_screen_bit = (header[6] & 0x08) != 0;
-        if mapper_id == 4 { prg_banks = prg_rom.len() / 0x2000; chr_banks = chr_rom.len() / 0x0400; }
 
         match mapper_id {
             0 => { let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
@@ -330,8 +337,11 @@ impl NesSystem {
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper9::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             } 
-
-                // 4 => Some(Box::new(Mapper4::new(prg_banks, chr_banks))), // MMC3 (Future)
+            206 => { // DxROM
+                godot_print!("Mapper206 (DxROM) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper206::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+            } 
             _ => {
                 godot_error!("Unsupported Mapper ID: {}", mapper_id);
                 None

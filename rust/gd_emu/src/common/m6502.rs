@@ -148,16 +148,11 @@ impl M6502Cpu {
         }
 
         let opcode = bus.read_byte(self.pc);
-//        if self.pc >= 0x8000 {
-        let target = bus.read_word(self.pc+1);       
-//        if self.total_cycles < 50000 {
-//            println!("({}) Current opcode: {:02x} PC={:04x}|A={:02X}|SP={:04X}|target={:04X}", self.total_cycles, opcode, self.pc, self.a, self.sp, target);
-//        }
-//        else {
-//            panic!("stop");
-//        }
         self.last_opcode = opcode;
         self.last_cycles = 0;
+//        if self.total_cycles > 200_000 && self.total_cycles < 210_000 {
+//            godot_print!("Current opcode: {:02x} PC={:04x}|A={:02x}|SP={:04x}", opcode, self.pc, self.a, self.sp);
+//        }
         self.pc = self.pc.wrapping_add(1);
 
         self.execute(opcode, bus);
@@ -452,7 +447,8 @@ impl M6502Cpu {
                 self.op_slo(bus, AddressingMode::IndirectY);
                 self.last_cycles = 8;
             }
-            0x33 => { // if both of these call get_operand_address, pc will not be correct
+            #[allow(unused_must_use)]
+            0x33 => { 
                 self.rotate_left_memory(bus, AddressingMode::IndirectY);
                 self._op_and_a(bus, AddressingMode::IndirectY);
                 self.last_cycles = 8;
@@ -508,6 +504,53 @@ impl M6502Cpu {
         let value:u8 = bus.read_byte(addr);
         self.add_with_carry_logic(value ^ 0xFF);
         if self.operand_address_crossed_page { 1 } else { 0 }
+    }
+
+    // Standard indexed store execution with intermediate dummy read cycle emulation
+    fn _op_indexed_store(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode, val_to_write: u8) {
+        match p_addressing_mode {
+            AddressingMode::AbsoluteX => {
+                let base: u16 = bus.read_word(self.pc);
+                self.pc = (self.pc + 2) & 0xFFFF;
+                let addr: u16 = base.wrapping_add(self.x as u16);
+                
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+                
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 5;
+            }
+            AddressingMode::AbsoluteY => {
+                let base: u16 = bus.read_word(self.pc);
+                self.pc = (self.pc + 2) & 0xFFFF;
+                let addr: u16 = base.wrapping_add(self.y as u16);
+                
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+                
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 5;
+            }
+            AddressingMode::IndirectY => {
+                let ptr = bus.read_byte(self.pc) as u16;
+                self.pc = self.pc.wrapping_add(1);
+    
+                let lo = bus.read_byte(ptr) as u16;
+                let hi = bus.read_byte(((ptr as u8).wrapping_add(1)) as u16) as u16;
+                let base = (hi << 8) | lo;
+                let addr = base.wrapping_add(self.y as u16);
+
+                // Emulate dummy read of uncrossed page cycle
+                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
+                bus.read_byte(dummy_addr);
+
+                bus.write_byte(addr, val_to_write);
+                self.last_cycles = 6;
+            }
+            _ => {}
+        }
     }
 
     fn add_with_carry_logic(&mut self, value: u8) {
@@ -651,52 +694,6 @@ impl M6502Cpu {
         let shifted = value >> 1;
         bus.write_byte(addr, shifted);
         self.update_z_n_flags(shifted);
-    }
-
-    fn _op_indexed_store(&mut self, bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode, val_to_write: u8) {
-        match p_addressing_mode {
-            AddressingMode::AbsoluteX => {
-                let base: u16 = bus.read_word(self.pc);
-                self.pc = (self.pc + 2) & 0xFFFF;
-                let addr: u16 = base.wrapping_add(self.x as u16);
-                
-                // Emulate dummy read of uncrossed page cycle
-                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
-                bus.read_byte(dummy_addr);
-                
-                bus.write_byte(addr, val_to_write);
-                self.last_cycles = 5;
-            }
-            AddressingMode::AbsoluteY => {
-                let base: u16 = bus.read_word(self.pc);
-                self.pc = (self.pc + 2) & 0xFFFF;
-                let addr: u16 = base.wrapping_add(self.y as u16);
-                
-                // Emulate dummy read of uncrossed page cycle
-                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
-                bus.read_byte(dummy_addr);
-                
-                bus.write_byte(addr, val_to_write);
-                self.last_cycles = 5;
-            }
-            AddressingMode::IndirectY => {
-                let ptr = bus.read_byte(self.pc) as u16;
-                self.pc = self.pc.wrapping_add(1);
-    
-                let lo = bus.read_byte(ptr) as u16;
-                let hi = bus.read_byte(((ptr as u8).wrapping_add(1)) as u16) as u16;
-                let base = (hi << 8) | lo;
-                let addr = base.wrapping_add(self.y as u16);
-
-                // Emulate dummy read of uncrossed page cycle
-                let dummy_addr = (base & 0xFF00) | (addr & 0x00FF);
-                bus.read_byte(dummy_addr);
-
-                bus.write_byte(addr, val_to_write);
-                self.last_cycles = 6;
-            }
-            _ => {}
-        }
     }
 
     fn op_ora(&mut self,bus: &mut dyn AddressBus, p_addressing_mode: AddressingMode) -> u8 {
@@ -1033,8 +1030,8 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFA) as u16;
         let hi = bus.read_byte(0xFFFB) as u16;
         self.pc = (hi << 8) | lo;
-       let current_sp=self.sp;
-        println!("({}): NMI triggered. SP={current_sp}", self.total_cycles);
+//        let current_sp=self.sp;
+//        println!("({}): NMI triggered. SP={current_sp}", self.total_cycles);
         7
     }
 
@@ -1046,8 +1043,8 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFE) as u16;
         let hi = bus.read_byte(0xFFFF) as u16;
         self.pc = (hi << 8) | lo;
-        let current_sp=self.sp;
-        println!("({}): IRQ triggered. SP={current_sp}", self.total_cycles);
+//        let current_sp=self.sp;
+//        println!("({}): IRQ triggered. SP={current_sp}", self.total_cycles);
         7
     }
 }

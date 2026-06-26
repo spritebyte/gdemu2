@@ -1,4 +1,5 @@
 use crate::nes::mappers::{Mapper,Mirroring};
+use godot::global::godot_print;
 
 // Mapper 2 (UxROM)
 pub struct Mapper2 {
@@ -43,7 +44,13 @@ impl Mapper for Mapper2 {
     }
 
     fn cpu_read(&self, addr: u16) -> u8 {
-        if addr >= 0x8000 && addr <= 0xBFFF {
+        if addr < 0x2000 {
+            return 0;
+        }
+        else if addr >= 0x6000 && addr <= 0x7FFF {
+            return self.prg_ram[(addr - 0x6000) as usize];
+        }
+        else if addr >= 0x8000 && addr <= 0xBFFF {
             // Switchable bank
             let bank = self.prg_bank as usize % self.prg_banks;
             let offset = (addr - 0x8000) as usize;
@@ -62,6 +69,8 @@ impl Mapper for Mapper2 {
 
     fn cpu_write(&mut self, addr: u16, value: u8) {
         if addr >= 0x8000 {
+            let num_banks = self.prg_banks;
+//            println!("CPU_WRITE: {addr}, {value}. {num_banks}");
             self.prg_bank = value % (self.prg_banks as u8);
         }
     }
@@ -82,6 +91,7 @@ impl Mapper for Mapper2 {
 
         if addr < 0x2000 {
             if self.chr_banks == 0 {
+                godot_print!("CHR-RAM write: addr=0x{:04X} value=0x{:02X}", addr, value);
                 self.chr_ram[addr as usize] = value;
             }
         }
