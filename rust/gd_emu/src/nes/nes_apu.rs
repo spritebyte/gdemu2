@@ -19,6 +19,20 @@ const NOISE_PERIOD_TABLE: [u16; 16] = [
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2032, 4064
 ];
 
+// NTSC DMC rate table: CPU cycles between output level changes
+const DMC_RATE_TABLE: [u16; 16] = [
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
+];
+
+/// Implemented by the bus/memory system so the APU can fetch DMC sample bytes
+/// via DMA without needing to know about the cartridge/mapper directly.
+pub trait DmcMemoryReader {
+    /// Read a single byte for DMC playback. Real hardware stalls the CPU for
+    /// 1-4 cycles per fetch; the caller (bus) is responsible for accounting for
+    /// that stall if cycle-accurate CPU timing matters to you.
+    fn dmc_read(&self, addr: u16) -> u8;
+}
+
 pub struct NesAPU {
     frame_counter: u32,
     mode_5_step: bool,
@@ -34,6 +48,13 @@ pub struct NesAPU {
     p1_volume: u8,
     pulse1_enabled: bool,
     p1_halt: bool,
+    // Pulse 1 Sweep Unit
+    p1_sweep_enabled: bool,
+    p1_sweep_period: u8,
+    p1_sweep_negate: bool,
+    p1_sweep_shift: u8,
+    p1_sweep_reload: bool,
+    p1_sweep_divider: u8,
 
     // Pulse 2 Registers & Components
     p2_timer_reload: u16,
@@ -44,6 +65,12 @@ pub struct NesAPU {
     p2_volume: u8,
     pulse2_enabled: bool,
     p2_halt: bool,
+    p2_sweep_enabled: bool,
+    p2_sweep_period: u8,
+    p2_sweep_negate: bool,
+    p2_sweep_shift: u8,
+    p2_sweep_reload: bool,
+    p2_sweep_divider: u8,
 
     // Triangle Channel State
     tri_enabled: bool,
@@ -67,13 +94,34 @@ pub struct NesAPU {
     noise_enabled: bool,
     noise_length_counter: u8,
 
+    // DMC Channel
+    dmc_irq_enabled: bool,
+    dmc_loop: bool,
+    dmc_rate_index: u8,
+    dmc_timer: u16,
+    dmc_output_level: u8,        // 7-bit DAC level, sent to mixer always
+    dmc_sample_addr_reg: u8,     // raw $4012 value
+    dmc_sample_length_reg: u8,   // raw $4013 value
+    dmc_current_addr: u16,       // memory reader address counter
+    dmc_bytes_remaining: u16,    // memory reader bytes-remaining counter
+    dmc_sample_buffer: Option<u8>, // None = empty
+    dmc_shift_register: u8,
+    dmc_bits_remaining: u8,
+    dmc_silence_flag: bool,
+    dmc_enabled: bool,           // from $4015 bit 4
+    dmc_interrupt_flag: bool,
+    dmc_dma_request: bool,       // set when a byte needs fetching; bus/CPU should service it
+
     // Envelopes
     p1_env_volume: u8,
     p1_env_divider: u8,
+    p1_env_start: bool,
     p2_env_volume: u8,
     p2_env_divider: u8,
+    p2_env_start: bool,
     n_env_volume: u8,
     n_env_divider: u8,
+    n_env_start: bool,
 
     // Audio Tracking
     audio_buffer: Vec<f32>,
@@ -102,6 +150,12 @@ impl NesAPU {
             pulse1_enabled: false,
             p1_halt: false,
             p1_output: 0.0,
+            p1_sweep_enabled: false,
+            p1_sweep_period: 0,
+            p1_sweep_negate: false,
+            p1_sweep_shift: 0,
+            p1_sweep_reload: false,
+            p1_sweep_divider: 0,
             p2_timer_reload: 0,
             p2_timer: 0,
             p2_sequence_step: 0,
@@ -111,6 +165,12 @@ impl NesAPU {
             pulse2_enabled: false,
             p2_halt: false,
             p2_output: 0.0,
+            p2_sweep_enabled: false,
+            p2_sweep_period: 0,
+            p2_sweep_negate: false,
+            p2_sweep_shift: 0,
+            p2_sweep_reload: false,
+            p2_sweep_divider: 0,
             tri_enabled: false,
             tri_reload_flag: false,
             tri_timer_reload: 0,
@@ -129,13 +189,60 @@ impl NesAPU {
             n_shift_register: 1, // Must be initialized to 1!
             noise_enabled: false,
             noise_length_counter: 0,
+            dmc_irq_enabled: false,
+            dmc_loop: false,
+            dmc_rate_index: 0,
+            dmc_timer: DMC_RATE_TABLE[0],
+            dmc_output_level: 0,
+            dmc_sample_addr_reg: 0,
+            dmc_sample_length_reg: 0,
+            dmc_current_addr: 0xC000,
+            dmc_bytes_remaining: 0,
+            dmc_sample_buffer: None,
+            dmc_shift_register: 0,
+            dmc_bits_remaining: 0,
+            dmc_silence_flag: true,
+            dmc_enabled: false,
+            dmc_interrupt_flag: false,
+            dmc_dma_request: false,
             p1_env_volume: 0,
             p1_env_divider: 0,
+            p1_env_start: false,
             p2_env_volume: 0,
             p2_env_divider: 0,
+            p2_env_start: false,
             n_env_volume: 0,
             n_env_divider: 0,
+            n_env_start: false,
         }
+    }
+
+    // Returns (target_period, is_muted)
+    fn calculate_sweep_target(&self, is_pulse_1: bool) -> (u16, bool) {
+        let current_period = if is_pulse_1 { self.p1_timer_reload } else { self.p2_timer_reload };
+        let shift = if is_pulse_1 { self.p1_sweep_shift } else { self.p2_sweep_shift };
+        let negate = if is_pulse_1 { self.p1_sweep_negate } else { self.p2_sweep_negate };
+
+        let delta = current_period >> shift;
+        
+        let target_period = if negate {
+            if is_pulse_1 {
+                // Pulse 1 uses ones' complement
+                current_period.saturating_sub(delta).saturating_sub(1)
+            } else {
+                // Pulse 2 uses two's complement
+                current_period.saturating_sub(delta)
+            }
+        } else {
+            current_period + delta
+        };
+
+        // Mute condition: 
+        // 1. If raw period is less than 8, pulse channel is silenced.
+        // 2. If the sweep engine pushes the period past 0x7FF (2047), it mutes.
+        let is_muted = current_period < 8 || target_period > 0x7FF;
+
+        (target_period, is_muted)
     }
 
     pub fn take_audio_samples(&mut self) -> Vec<f32> {
@@ -150,6 +257,13 @@ impl NesAPU {
                 self.p1_halt = (data & 0x20) > 0;
                 self.p1_volume = data & 0x0F;
             }
+            0x4001 => {
+                self.p1_sweep_enabled = (data & 0x80) > 0;
+                self.p1_sweep_period = (data >> 4) & 0x07;
+                self.p1_sweep_negate = (data & 0x08) > 0;
+                self.p1_sweep_shift = data & 0x07;
+                self.p1_sweep_reload = true;               
+            }
             0x4002 => { 
                 self.p1_timer_reload = (self.p1_timer_reload & 0x0700) | (data as u16);
             }
@@ -157,6 +271,8 @@ impl NesAPU {
                 self.p1_timer_reload = (self.p1_timer_reload & 0x00FF) | (((data & 0x07) as u16) << 8); 
                 self.p1_sequence_step = 0; 
                 self.write_p1_length(data);
+                self.p1_sweep_reload = true;
+                self.p1_env_start = true;
             }
             
             // Pulse 2
@@ -165,6 +281,13 @@ impl NesAPU {
                 self.p2_halt = (data & 0x20) > 0;
                 self.p2_volume = data & 0x0F;
             }
+            0x4005 => {
+                self.p2_sweep_enabled = (data & 0x80) > 0;
+                self.p2_sweep_period = (data >> 4) & 0x07;
+                self.p2_sweep_negate = (data & 0x08) > 0;
+                self.p2_sweep_shift = data & 0x07;
+                self.p2_sweep_reload = true;
+            }
             0x4006 => {
                 self.p2_timer_reload = (self.p2_timer_reload & 0x0700) | (data as u16);
             }
@@ -172,6 +295,8 @@ impl NesAPU {
                 self.p2_timer_reload = (self.p2_timer_reload & 0x00FF) | (((data & 0x07) as u16) << 8);
                 self.p2_sequence_step = 0;
                 self.write_p2_length(data);
+                self.p2_sweep_reload = true;
+                self.p2_env_start = true;
             }
 
             // Triangle
@@ -193,6 +318,28 @@ impl NesAPU {
                 if self.noise_enabled {
                     self.noise_length_counter = LENGTH_TABLE[((data >> 3) & 0x1F) as usize];
                 }
+                self.n_env_start = true;
+            }
+
+            // DMC
+            0x4010 => {
+                self.dmc_irq_enabled = (data & 0x80) > 0;
+                self.dmc_loop = (data & 0x40) > 0;
+                self.dmc_rate_index = data & 0x0F;
+                self.dmc_timer = DMC_RATE_TABLE[self.dmc_rate_index as usize];
+                if !self.dmc_irq_enabled {
+                    self.dmc_interrupt_flag = false;
+                }
+            }
+            0x4011 => {
+                // Direct load: sets output level directly, bypassing the shifter.
+                self.dmc_output_level = data & 0x7F;
+            }
+            0x4012 => {
+                self.dmc_sample_addr_reg = data;
+            }
+            0x4013 => {
+                self.dmc_sample_length_reg = data;
             }
 
             // Channels Status Control
@@ -201,11 +348,31 @@ impl NesAPU {
                 self.pulse2_enabled = (data & 0x02) > 0;
                 self.tri_enabled = (data & 0x04) > 0;
                 self.noise_enabled = (data & 0x08) > 0;
+                let dmc_enable = (data & 0x10) > 0;
 
                 if !self.pulse1_enabled { self.p1_length_counter = 0; }
                 if !self.pulse2_enabled { self.p2_length_counter = 0; }
                 if !self.tri_enabled { self.tri_length_counter = 0; }
                 if !self.noise_enabled { self.noise_length_counter = 0; }
+
+                // Writing 0 to the DMC enable bit immediately disables DMA and
+                // silences the channel's bytes-remaining counter (but NOT the
+                // output level - that holds its last value, per hardware).
+                // Writing 1 only (re)starts the sample if bytes_remaining is 0;
+                // if a sample is already playing, it is NOT restarted.
+                self.dmc_enabled = dmc_enable;
+                if !dmc_enable {
+                    self.dmc_bytes_remaining = 0;
+                } else if self.dmc_bytes_remaining == 0 {
+                    self.dmc_current_addr = 0xC000 + (self.dmc_sample_addr_reg as u16 * 64);
+                    self.dmc_bytes_remaining = (self.dmc_sample_length_reg as u16 * 16) + 1;
+                }
+                // Reading $4015 acknowledges the DMC IRQ; writing $4015 does not
+                // clear dmc_interrupt_flag directly, but disabling the channel
+                // does clear any pending IRQ per hardware behavior.
+                if !dmc_enable {
+                    self.dmc_interrupt_flag = false;
+                }
             }
 
             // Frame Counter Mode
@@ -248,17 +415,21 @@ impl NesAPU {
         if self.p2_length_counter > 0 { status |= 0x02; }
         if self.tri_length_counter > 0 { status |= 0x04; }
         if self.noise_length_counter > 0 { status |= 0x08; }
+        if self.dmc_bytes_remaining > 0 { status |= 0x10; }
 
         if self.frame_irq_flag { status |= 0x40; }
+        if self.dmc_interrupt_flag { status |= 0x80; }
         
         // Reading $4015 acknowledges and clears the Frame Counter IRQ flag!
         self.frame_irq_flag = false;
+        // Note: reading $4015 does NOT clear the DMC IRQ flag (it's cleared by
+        // disabling the channel via $4015 write, or by $4010 clearing IRQ enable).
 
         status
     }
 
     pub fn is_irq_asserted(&self) -> bool {
-        self.frame_irq_flag && !self.irq_inhibit
+        (self.frame_irq_flag && !self.irq_inhibit) || self.dmc_interrupt_flag
     }
 
     pub fn write_p1_length(&mut self, data: u8) {
@@ -273,8 +444,16 @@ impl NesAPU {
         }
     }
 
-    pub fn step(&mut self, cycles: u32) {
+    /// 'mem' provides DMC sample bytes via DMA. Pass your Bus (or any wrapper
+    /// around it) - it just needs to implement 'DmcMemoryReader::dmc_read'.
+    pub fn step<M: DmcMemoryReader>(&mut self, cycles: u64, mem: &M) {
         for _ in 0..cycles {
+            if self.p1_timer > self.p1_timer_reload {
+                self.p1_timer = self.p1_timer_reload;
+            }
+            if self.p2_timer > self.p2_timer_reload {
+                self.p2_timer = self.p2_timer_reload;
+            }
             // 1. Tick Core Timers
             if self.frame_counter % 2 == 0 {
                 // Pulse 1
@@ -314,19 +493,83 @@ impl NesAPU {
                 self.n_timer -= 1;
             }
 
+            // --- DMC Memory Reader ---
+            // Whenever the sample buffer is empty and there are bytes left,
+            // fetch the next byte via DMA. On real hardware this stalls the
+            // CPU for 1-4 cycles; that's the bus's responsibility, not ours.
+            if self.dmc_sample_buffer.is_none() && self.dmc_bytes_remaining > 0 {
+                let byte = mem.dmc_read(self.dmc_current_addr);
+                self.dmc_sample_buffer = Some(byte);
+                self.dmc_dma_request = true; // bus can inspect/clear this if it wants stall accounting
+
+                self.dmc_current_addr = if self.dmc_current_addr == 0xFFFF {
+                    0x8000
+                } else {
+                    self.dmc_current_addr + 1
+                };
+
+                self.dmc_bytes_remaining -= 1;
+                if self.dmc_bytes_remaining == 0 {
+                    if self.dmc_loop {
+                        // Restart the sample immediately.
+                        self.dmc_current_addr = 0xC000 + (self.dmc_sample_addr_reg as u16 * 64);
+                        self.dmc_bytes_remaining = (self.dmc_sample_length_reg as u16 * 16) + 1;
+                    } else if self.dmc_irq_enabled {
+                        self.dmc_interrupt_flag = true;
+                    }
+                }
+            }
+
+            // --- DMC Timer & Output Unit ---
+            // The rate table value is in CPU cycles, so this ticks directly
+            // against the per-cycle loop (unlike pulse, which halves first).
+            if self.dmc_timer == 0 {
+                self.dmc_timer = DMC_RATE_TABLE[self.dmc_rate_index as usize];
+
+                if !self.dmc_silence_flag {
+                    if (self.dmc_shift_register & 1) == 1 {
+                        if self.dmc_output_level <= 125 { self.dmc_output_level += 2; }
+                    } else {
+                        if self.dmc_output_level >= 2 { self.dmc_output_level -= 2; }
+                    }
+                }
+                self.dmc_shift_register >>= 1;
+
+                if self.dmc_bits_remaining > 0 {
+                    self.dmc_bits_remaining -= 1;
+                }
+                if self.dmc_bits_remaining == 0 {
+                    // Output cycle ended; start a new one.
+                    self.dmc_bits_remaining = 8;
+                    if let Some(byte) = self.dmc_sample_buffer.take() {
+                        self.dmc_silence_flag = false;
+                        self.dmc_shift_register = byte;
+                    } else {
+                        self.dmc_silence_flag = true;
+                    }
+                }
+            } else {
+                self.dmc_timer -= 1;
+            }
+
             // 2. Mix Digital Outputs
             // Pulse 1
-            if self.p1_length_counter > 0 && self.p1_timer_reload >= 8 {
+            let (_, p1_muted) = self.calculate_sweep_target(true);
+            if self.p1_length_counter > 0 && !p1_muted {
                 let current_bit = DUTY_TABLE[self.p1_duty_index as usize][self.p1_sequence_step as usize];
-                self.p1_output = if current_bit > 0 { self.p1_volume as f32 } else { 0.0 };
+                // Check bit 4 of $4000 (halt flag doubles as constant volume flag)
+                let p1_active_volume = if self.p1_halt { self.p1_volume } else { self.p1_env_volume };
+                self.p1_output = if current_bit > 0 { p1_active_volume as f32 } else { 0.0 };
             } else {
                 self.p1_output = 0.0;
             }
 
             // Pulse 2
-            if self.p2_length_counter > 0 && self.p2_timer_reload >= 8 {
+            let (_, p2_muted) = self.calculate_sweep_target(false);
+            if self.p2_length_counter > 0 && !p2_muted {
                 let current_bit = DUTY_TABLE[self.p2_duty_index as usize][self.p2_sequence_step as usize];
-                self.p2_output = if current_bit > 0 { self.p2_volume as f32 } else { 0.0 };
+                let p2_active_volume = if self.p2_halt { self.p2_volume } else { self.p2_env_volume };
+                self.p2_output = if current_bit > 0 { p2_active_volume as f32 } else { 0.0 };
             } else {
                 self.p2_output = 0.0;
             }
@@ -340,7 +583,8 @@ impl NesAPU {
 
             // Noise
             let n_output = if self.noise_length_counter > 0 && (self.n_shift_register & 1) == 0 {
-                self.n_volume as f32
+                let n_active_volume = if self.n_constant_volume { self.n_volume } else { self.n_env_volume };
+                n_active_volume as f32
             } else {
                 0.0
             };
@@ -380,6 +624,29 @@ impl NesAPU {
                 if self.p2_length_counter > 0 && !self.p2_halt { self.p2_length_counter -= 1; }
                 if self.tri_length_counter > 0 && !self.tri_control_flag { self.tri_length_counter -= 1; }
                 if self.noise_length_counter > 0 && !self.n_halt { self.noise_length_counter -= 1; }
+                // --- PULSE 1 SWEEP TICK ---
+                let (p1_target, p1_muted) = self.calculate_sweep_target(true);
+                if self.p1_sweep_divider == 0 && self.p1_sweep_enabled && !p1_muted && self.p1_sweep_shift > 0 {
+                    self.p1_timer_reload = p1_target;
+                }
+                if self.p1_sweep_divider == 0 || self.p1_sweep_reload {
+                    self.p1_sweep_divider = self.p1_sweep_period;
+                self.p1_sweep_reload = false;
+                 } else {
+                    self.p1_sweep_divider -= 1;
+                }
+
+                // --- PULSE 2 SWEEP TICK ---
+                let (p2_target, p2_muted) = self.calculate_sweep_target(false);
+                if self.p2_sweep_divider == 0 && self.p2_sweep_enabled && !p2_muted && self.p2_sweep_shift > 0 {
+                    self.p2_timer_reload = p2_target;
+                }
+                if self.p2_sweep_divider == 0 || self.p2_sweep_reload {
+                    self.p2_sweep_divider = self.p2_sweep_period;
+                    self.p2_sweep_reload = false;
+                } else {
+                    self.p2_sweep_divider -= 1;
+                }
             }
 
             if env_clock {
@@ -392,6 +659,59 @@ impl NesAPU {
                 if !self.tri_control_flag {
                     self.tri_reload_flag = false;
                 }
+                // --- PULSE 1 ENVELOPE ---
+                if self.p1_env_start {
+                    self.p1_env_start = false;
+                    self.p1_env_volume = 15;
+                    self.p1_env_divider = self.p1_volume; // Volume register acts as reload value
+                } else {
+                    if self.p1_env_divider == 0 {
+                        self.p1_env_divider = self.p1_volume;
+                        if self.p1_env_volume > 0 {
+                            self.p1_env_volume -= 1;
+                        } else if self.p1_halt { // Loop flag (halt bit doubles as envelope loop)
+                            self.p1_env_volume = 15;
+                        }
+                    } else {
+                        self.p1_env_divider -= 1;
+                    }
+                }
+
+                // --- PULSE 2 ENVELOPE ---
+                if self.p2_env_start {
+                    self.p2_env_start = false;
+                    self.p2_env_volume = 15;
+                    self.p2_env_divider = self.p2_volume;
+                } else {
+                    if self.p2_env_divider == 0 {
+                        self.p2_env_divider = self.p2_volume;
+                        if self.p2_env_volume > 0 {
+                            self.p2_env_volume -= 1;
+                        } else if self.p2_halt {
+                            self.p2_env_volume = 15;
+                        }
+                    } else {
+                        self.p2_env_divider -= 1;
+                    }
+                }
+
+                // --- NOISE ENVELOPE ---
+                if self.n_env_start {
+                    self.n_env_start = false;
+                    self.n_env_volume = 15;
+                    self.n_env_divider = self.n_volume;
+                } else {
+                    if self.n_env_divider == 0 {
+                        self.n_env_divider = self.n_volume;
+                        if self.n_env_volume > 0 {
+                            self.n_env_volume -= 1;
+                        } else if self.n_halt {
+                            self.n_env_volume = 15;
+                        }
+                    } else {
+                        self.n_env_divider -= 1;
+                    }
+                }
             }
 
             // 4. Sample Extraction & Mixing Approximation
@@ -399,8 +719,13 @@ impl NesAPU {
             if self.sample_clock >= self.sample_rate_ratio {
                 self.sample_clock -= self.sample_rate_ratio;
                 
+                // DMC output level is 7-bit (0-127); scale down to roughly the
+                // same 0-15 range the other channels use before applying the
+                // same weighting scheme, so it doesn't drown everything else out.
+                let dmc_scaled = (self.dmc_output_level as f32 / 127.0) * 15.0;
+
                 // Approximate linear mixing weights
-                let mixed = (self.p1_output + self.p2_output + (tri_output * 0.6) + (n_output * 0.4)) / 30.0;
+                let mixed = (self.p1_output + self.p2_output + (tri_output * 0.6) + (n_output * 0.4) + (dmc_scaled * 0.6)) / 30.0;
                 self.audio_buffer.push(mixed);
             }
         }

@@ -1,5 +1,6 @@
 use crate::nes::mappers::{Mapper, Mirroring};
 use std::cell::Cell;
+use godot::global::godot_print;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mmc3Revision {
@@ -40,7 +41,7 @@ pub struct Mapper4 {
 }
 
 impl Mapper4 {
-    pub fn new(prg_banks: usize, chr_banks: usize, prg_rom: Vec<u8>, chr_rom: Vec<u8>, initial_mirroring: Mirroring, four_screen_bit: bool) -> Self {
+    pub fn new(prg_banks: usize, chr_banks: usize, prg_rom: Vec<u8>, chr_rom: Vec<u8>, initial_mirroring: Mirroring, four_screen_bit: bool, submapper: u8) -> Self {
         let prg_ram = vec![0; 8192];
         let chr_ram = if chr_banks == 0 { vec![0; 8192] } else { vec![] };
 
@@ -123,11 +124,11 @@ impl Mapper4 {
 }
 
 impl Mapper for Mapper4 {
-    fn update_cycles(&mut self, cycles: u64) {
+    fn step_cycles(&mut self, cycles: u64) {
         self.current_cycle += cycles as i64;
     }
 
-    fn check_irq(&self) -> bool {
+    fn is_irq_asserted(&self) -> bool {
         self.irq_active.get()
     }
 
@@ -188,9 +189,12 @@ impl Mapper for Mapper4 {
                 // $E000: Disable MMC3 IRQs and acknowledge pending interrupt
                 self.irq_enabled.set(false);
                 self.irq_active.set(false);
+//                godot_print!("MMC3_DIAG: IRQ disabled+acked (counter={})", self.irq_counter.get());
+                self.a12_low_counter.set(0);
             } else {
                 // $E001: Enable MMC3 IRQs
                 self.irq_enabled.set(true);
+//                godot_print!("MMC3_DIAG: IRQ enabled (counter={}, latch={})", self.irq_counter.get(), self.irq_latch.get());
             }
         }
     }
@@ -205,6 +209,10 @@ impl Mapper for Mapper4 {
         } else {
             self.irq_counter.set(current_counter.saturating_sub(1));
         }
+//        godot_print!(
+//            "MMC3_DIAG: clock_scanline counter={} reload={} enabled={} active={}",
+//            self.irq_counter.get(), is_reload, self.irq_enabled.get(), self.irq_active.get()
+//        );
 
         // --- REVISION SENSITIVE IRQ LOGIC ---
         match self.revision {
@@ -212,12 +220,14 @@ impl Mapper for Mapper4 {
                 // Rev A: Only trigger IRQ if we decremented to 0. Reloading with 0 does NOT trigger IRQ.
                 if !is_reload && self.irq_counter.get() == 0 && self.irq_enabled.get() {
                     self.irq_active.set(true);
+//                    godot_print!("MMC3_DIAG: *** IRQ FIRED (RevA) ***");
                 }
             }
             Mmc3Revision::RevB => {
                 // Rev B/C: Trigger IRQ if the counter is exactly 0 after the step (even on reload).
                 if self.irq_counter.get() == 0 && self.irq_enabled.get() {
                     self.irq_active.set(true);
+//                    godot_print!("MMC3_DIAG: *** IRQ FIRED (RevB) ***");
                 }
             }
         }

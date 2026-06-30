@@ -4,6 +4,7 @@ use crate::nes::mappers::Mapper;
 use crate::nes::cartridge::Cartridge;
 use crate::nes::nes_ppu::NesPPU;
 use crate::nes::nes_apu::NesAPU;
+use crate::nes::nes_apu::DmcMemoryReader;
 use std::cell::{UnsafeCell, Cell};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -42,14 +43,33 @@ impl NesBus {
     pub fn load_sram(&mut self, data: &[u8]) { self.cartridge.load_sram(data); }
     pub fn is_sram_dirty(&self) -> bool { self.cartridge.is_sram_dirty() }
     pub fn clear_sram_dirty(&mut self) { self.cartridge.clear_sram_dirty(); }
+    pub fn step_cycles(&mut self, cycles: u64) {
+        // Forward the updated cycle counter to the cartridge's mapper
+        self.cartridge.mapper.step_cycles(cycles);
+    }
+}
+
+impl DmcMemoryReader for NesBus {
+    fn dmc_read(&self, addr: u16) -> u8 {
+        self.read_byte(addr) // route through cartridge/mapper as normal
+    }
 }
 
 impl AddressBus for NesBus {
+    fn is_nmi_line_asserted(&mut self) -> bool {
+         self.ppu.get_mut().is_nmi_line_asserted()
+    }
+
+    fn is_irq_line_asserted(&mut self) -> bool {
+        self.apu.get_mut().is_irq_asserted() || self.cartridge.mapper.is_irq_asserted()
+    }
+
     fn read_byte(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.ram[(addr % 0x0800) as usize],
             0x2000..=0x3FFF => {
                 let register = addr % 8;
+//                println!("BUS read_byte: {:04X} reg:{ :02X} ", addr, register);
                 let mapper_ref = &*self.cartridge.mapper;
                 let ppu_mut = unsafe { &mut *self.ppu.get() };
                 ppu_mut.cpu_read_reg(mapper_ref, register)
@@ -91,8 +111,10 @@ impl AddressBus for NesBus {
                 }
 
                 self.ppu.get_mut().write_oam_dma(&dma_buffer);
+//                let write_cycle = self.total_cpu_cycles + 3;
 
                 let mut cycles_to_burn = 513;
+ //               if write_cycle % 2 != 0 {
                 if self.total_cpu_cycles % 2 != 0 {
                     cycles_to_burn += 1;
                 }
@@ -109,18 +131,5 @@ impl AddressBus for NesBus {
              }
             0x4020..=0xFFFF => { self.cartridge.mapper.cpu_write(addr, value); }
         }
-    }
-
-    fn is_nmi_line_asserted(&mut self) -> bool {
-         self.ppu.get_mut().is_nmi_line_asserted()
-    }
-
-    fn is_irq_line_asserted(&mut self) -> bool {
-        self.apu.get_mut().is_irq_asserted() || self.cartridge.mapper.is_irq_asserted()
-    }
-
-    fn update_cycles(&mut self, cycles: u64) {
-        // Forward the updated cycle counter to the cartridge's mapper
-        self.cartridge.mapper.update_cycles(cycles);
     }
 }

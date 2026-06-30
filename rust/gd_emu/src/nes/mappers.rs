@@ -2,17 +2,25 @@ pub trait Mapper {
     fn cpu_read(&self, addr: u16) -> u8;
     fn cpu_write(&mut self, addr: u16, value: u8);
     fn ppu_read(&self, addr: u16) -> u8;
+    fn ppu_read_ctx(&self, addr: u16, is_bg_fetch: bool) -> u8 {
+        let _ = is_bg_fetch;
+        self.ppu_read(addr)
+    }
     fn ppu_write(&mut self, addr: u16, value: u8);
     fn mirror_vram_address(&self, addr: u16) -> usize;
+    fn read_nametable_byte(&self, addr: u16, ppu_vram: &[u8; 4096], is_attribute_byte: bool) -> u8 {
+        let _ = is_attribute_byte;
+        ppu_vram[self.mirror_vram_address(addr)]
+    }
     fn is_irq_asserted(&self) -> bool { false }
-    fn update_cycles(&mut self, _cycles: u64) {}
+    fn step_cycles(&mut self, _cycles: u64) {}
     fn get_sram(&self) -> Option<&[u8]> { None }
     fn load_sram(&mut self, _data: &[u8]) {}
     fn is_sram_dirty(&self) -> bool { false }
     fn clear_sram_dirty(&mut self) {}
-    fn check_irq(&self) -> bool { false }
     fn check_a12(&self, _addr: u16) {}
     fn clock_scanline(&mut self) {}
+    fn notify_frame_start(&mut self) {}
 }
 
 #[derive(Clone, Copy, PartialEq)]

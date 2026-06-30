@@ -1,5 +1,4 @@
 use crate::nes::mappers::{Mapper,Mirroring};
-use godot::global::godot_print;
 
 // Mapper 2 (UxROM)
 pub struct Mapper2 {
@@ -61,7 +60,7 @@ impl Mapper2 {
 }
 
 impl Mapper for Mapper2 {
-    fn update_cycles(&mut self, cycles: u64) {
+    fn step_cycles(&mut self, cycles: u64) {
         self.current_cycle += cycles as i64;
     }
 
@@ -121,7 +120,6 @@ impl Mapper for Mapper2 {
 
         if addr < 0x2000 {
             if self.chr_banks == 0 {
-                godot_print!("CHR-RAM write: addr=0x{:04X} value=0x{:02X}", addr, value);
                 self.chr_ram[addr as usize] = value;
             }
         }

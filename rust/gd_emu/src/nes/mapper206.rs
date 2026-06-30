@@ -90,7 +90,7 @@ impl Mapper206 {
 }
 
 impl Mapper for Mapper206 {
-    fn update_cycles(&mut self, cycles: u64) {
+    fn step_cycles(&mut self, cycles: u64) {
         self.current_cycle += cycles as i64;
     }
 

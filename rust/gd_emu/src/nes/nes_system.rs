@@ -7,9 +7,11 @@ use crate::nes::mapper1::Mapper1;
 use crate::nes::mapper2::Mapper2;
 use crate::nes::mapper3::Mapper3;
 use crate::nes::mapper4::Mapper4;
+use crate::nes::mapper5::Mapper5;
 use crate::nes::mapper7::Mapper7;
 use crate::nes::mapper9::Mapper9;
 use crate::nes::mapper34::Mapper34;
+use crate::nes::mapper69::Mapper69;
 use crate::nes::mapper206::Mapper206;
 
 use godot::prelude::*;
@@ -24,6 +26,7 @@ const PRG_ROM_COUNT_IDX: u8 = 0x04;
 const CHR_ROM_COUNT_IDX: u8 = 0x05;
 const CONTROL_BYTE_1_IDX: u8 = 0x06;
 const CONTROL_BYTE_2_IDX: u8 = 0x07;
+const INES2_MAPPER_BYTE:  u8 = 0x08;
 const PRG_ROM_PAGE_SIZE: u16 = 1024 * 16;
 const CHR_ROM_PAGE_SIZE: u16 = 1024 * 8; 
 
@@ -71,6 +74,23 @@ impl SystemDisplayInfo {
             target_aspect_ratio: 4.0/3.0,
         }
     }
+    // Preset: Show the exact raw signal, glitches and all
+    #[func]
+    pub fn set_mode_overscan(&mut self) {
+        self.visible_x = 0;
+        self.visible_y = 0;
+        self.visible_width = 256;
+        self.visible_height = 240;
+    }
+
+    // Preset: Classic 80s TV crop (Removes SMB3 sidebars and top/bottom junk)
+    #[func]
+    pub fn set_mode_cropped_ntsc(&mut self) {
+        self.visible_x = 8;       // Cut off left 8 pixels
+        self.visible_y = 8;       // Cut off top 8 lines
+        self.visible_width = 240;  // 256 - 8 (left) - 8 (right)
+        self.visible_height = 224; // 240 - 8 (top) - 8 (bottom)
+    }
 }
 
 #[godot_api]
@@ -97,6 +117,11 @@ impl NesSystem {
 
         // slice ROM bytes
         let has_trainer:bool = (bytes[CONTROL_BYTE_1_IDX as usize] & 0b100) != 0;
+        let ines2: bool = (bytes[CONTROL_BYTE_2_IDX as usize] & 0b1100) == 0x08;
+        let mapper_byte = bytes[CONTROL_BYTE_2_IDX as usize];
+        let submapper = (mapper_byte & 0xF0) >> 4;
+        if ines2 { godot_print!("iNES 2 header found. Submapper={:02X} ", submapper); }
+        else { godot_print!("iNES header byte found. {:02X}", mapper_byte)}
         let prg_start = 16;
         let prg_end = prg_start + prg_rom_size;
         let chr_end = prg_end + (bytes[5] as usize * 8192);
@@ -158,17 +183,12 @@ impl NesSystem {
 
         let mut cycles_this_frame:u16 = 0;
         while cycles_this_frame < 29780 {
-            if self.bus.cartridge.mapper.check_irq() && !self.cpu.is_interrupt_disabled() {
-                self.cpu.trigger_irq(&mut self.bus);
-                self.tick_components(7);
-                cycles_this_frame += 7;
-            }
             let cycles = self.cpu.step(&mut self.bus);
-            self.tick_components(cycles as u32);
+            self.tick_components(cycles as u64);
             cycles_this_frame += cycles as u16;
             if self.bus.dma_cycles > 0 {
                 let dma_penalty = self.bus.dma_cycles;
-                self.tick_components(dma_penalty as u32);
+                self.tick_components(dma_penalty as u64);
                 self.bus.dma_cycles = 0;
             }
         }
@@ -183,10 +203,12 @@ impl NesSystem {
         }
     }
 
-    fn tick_components(&mut self, cycles: u32) {
+    fn tick_components(&mut self, cycles: u64) {
         let mapper_ref = &mut *self.bus.cartridge.mapper; 
         self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
-        self.bus.apu.get_mut().step(cycles);
+        self.bus.step_cycles(cycles);
+        let apu_ptr = self.bus.apu.get();
+        unsafe { (*apu_ptr).step(cycles, &self.bus); }
         self.bus.total_cpu_cycles += cycles as u64;
     }
 
@@ -327,7 +349,12 @@ impl NesSystem {
             4 => { // MMC3
                 godot_print!("Mapper4 (MMC3) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
-                Some(Box::new(Mapper4::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
+                Some(Box::new(Mapper4::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit, submapper)))
+            }
+            5 => { // MMC3
+                godot_print!("Mapper5 (MMC5) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper5::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             }
             7 => { // AxROM
                 godot_print!("Mapper7 (AxROM) created");
@@ -339,10 +366,15 @@ impl NesSystem {
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper9::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit)))
             }
-            34 => { //
-                godot_print!("Mapper34 () created");
+            34 => { // BNROM/NINA-001
+                godot_print!("Mapper34 (NINA-001/NINA-002/BNROM) created");
                 let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
                 Some(Box::new(Mapper34::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit, submapper)))
+            }
+            69 => { // Sunsoft mappers
+                godot_print!("Mapper69 (Sunsoft FME-7/5A/5B) created");
+                let initial_mirroring:Mirroring = if mirroring_bit { Mirroring::Vertical } else { Mirroring::Horizontal };
+                Some(Box::new(Mapper69::new(prg_banks, chr_banks, prg_rom, chr_rom, initial_mirroring, four_screen_bit, submapper)))
             } 
             206 => { // DxROM
                 godot_print!("Mapper206 (DxROM) created");
