@@ -169,7 +169,7 @@ impl Mapper for Mapper1 {
         }
         if addr < 0x8000 { return }
         
-        godot_print!("Cycle:{ }, last_write_cycle:{ }|write_count={ }|Addr={:04X}|value={ }", self.current_cycle, self.last_write_cycle, self.write_count, addr, value);
+//        godot_print!("Cycle:{ }, last_write_cycle:{ }|write_count={ }|Addr={:04X}|value={ }", self.current_cycle, self.last_write_cycle, self.write_count, addr, value);
 
         if self.last_write_cycle >= 0 && (self.current_cycle - self.last_write_cycle) <= 1 {
             return; 
@@ -198,7 +198,7 @@ impl Mapper for Mapper1 {
 
             match target_reg {
                 0 => { // $8000-$9FFF: Control Register
-                    godot_print!("Updating control register from {:02X} to {:02X}", self.control, self.shift_reg);
+//                    godot_print!("Updating control register from {:02X} to {:02X}", self.control, self.shift_reg);
                     self.control = self.shift_reg;
                     self.update_mirroring();
                 }
@@ -211,7 +211,7 @@ impl Mapper for Mapper1 {
                 3 => { // $E000-$FFFF: PRG Bank
                     // Strip the PRG RAM protect bit (bit 4) if present
                     let prg_bank_stripped = self.shift_reg & 0x0F;
-                    godot_print!("prg_bank updated from {:02X} to {:02X}", self.prg_bank, self.shift_reg);
+//                    godot_print!("prg_bank updated from {:02X} to {:02X}", self.prg_bank, self.shift_reg);
                     self.prg_bank = self.shift_reg;
                 }
                 _ => unreachable!(),

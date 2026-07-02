@@ -60,6 +60,10 @@ impl AddressBus for NesBus {
          self.ppu.get_mut().is_nmi_line_asserted()
     }
 
+    fn total_cycles(&self) -> u64 {
+        self.total_cpu_cycles
+    }
+
     fn is_irq_line_asserted(&mut self) -> bool {
         self.apu.get_mut().is_irq_asserted() || self.cartridge.mapper_mut().is_irq_asserted()
     }
@@ -71,9 +75,10 @@ impl AddressBus for NesBus {
                 let register = addr % 8;
 //                let mapper_for_catchup = &mut *self.cartridge.mapper;
                 let ppu_mut = unsafe { &mut *self.ppu.get() };
-//                ppu_mut.catch_up(mapper_for_catchup, self.total_cpu_cycles);
+//                ppu_mut.catch_up(self.cartridge.mapper_mut(), self.total_cpu_cycles);
 //                println!("BUS read_byte: {:04X} reg:{ :02X} ", addr, register);
-                let mapper_ref = self.cartridge.mapper();              
+//                ppu_mut.catch_up(self.cartridge.mapper_mut(), self.total_cpu_cycles);
+                let mapper_ref = self.cartridge.mapper();
                 ppu_mut.cpu_read_reg(mapper_ref, register)
             }
             0x4015 => {
@@ -102,9 +107,11 @@ impl AddressBus for NesBus {
                 let mapper_ref = self.cartridge.mapper_mut();
 
                 let ppu_mut = self.ppu.get_mut();
+//                ppu_mut.catch_up(self.cartridge.mapper_mut(), self.total_cpu_cycles);
                 ppu_mut.cpu_write_reg(mapper_ref, register, value);
             }
             0x4014 => {
+//                self.ppu.get_mut().catch_up(self.cartridge.mapper_mut(), self.total_cpu_cycles);
                 let page_start = (value as u16) << 8;
                 let mut dma_buffer = [0u8; 256];
 

@@ -187,16 +187,28 @@ impl NesSystem {
 
         let mut cycles_this_frame:u16 = 0;
         while cycles_this_frame < 29780 {
-            let cycles = self.cpu.step(&mut self.bus);
-            self.tick_components(cycles as u64);
-            cycles_this_frame += cycles as u16;
+            let mapper = self.bus.cartridge.mapper_mut();
+            self.bus.ppu.get_mut().catch_up(mapper, self.bus.total_cpu_cycles);
+            self.bus.step_cycles(1);
+            self.cpu.step(&mut self.bus);
+            self.bus.total_cpu_cycles += 1;
+            unsafe { (*self.bus.apu.get()).step(1, &self.bus); }
+            cycles_this_frame += 1;
             if self.bus.dma_cycles > 0 {
                 let dma_penalty = self.bus.dma_cycles;
-                self.tick_components(dma_penalty as u64);
                 self.bus.dma_cycles = 0;
+                for _ in 0..dma_penalty {
+                    let mapper = self.bus.cartridge.mapper_mut();
+                    self.bus.ppu.get_mut().catch_up(mapper, self.bus.total_cpu_cycles);
+                    self.bus.total_cpu_cycles += 1;      
+                    self.bus.step_cycles(1);
+                    unsafe { (*self.bus.apu.get()).step(1, &self.bus); }
+                    cycles_this_frame += 1;
+                }
             }
         }
         let samples = self.bus.apu.get_mut().take_audio_samples();
+        godot_print!("Frame sample size={}", samples.len());
         if !samples.is_empty() {
             if let Some(playback) = self.playback.as_mut() {
                 let frames: PackedVector2Array = samples.iter()
@@ -205,16 +217,6 @@ impl NesSystem {
                 playback.push_buffer(&frames);
             }
         }
-    }
-
-    fn tick_components(&mut self, cycles: u64) {
-        self.bus.total_cpu_cycles += cycles as u64;
-        let mapper_ref = self.bus.cartridge.mapper_mut();
-        self.bus.ppu.get_mut().catch_up(mapper_ref, self.bus.total_cpu_cycles);
-//        self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
-        self.bus.step_cycles(cycles);
-        let apu_ptr = self.bus.apu.get();
-        unsafe { (*apu_ptr).step(cycles, &self.bus); }
     }
 
     #[func]

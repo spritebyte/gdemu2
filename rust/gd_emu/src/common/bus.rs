@@ -1,7 +1,7 @@
 pub trait AddressBus {
     fn read_byte(&self, addr: u16) -> u8;
     fn write_byte(&mut self, addr: u16, value: u8);
-
+    fn total_cycles(&self) -> u64 { 0 }
     fn read_word(&self, addr: u16) -> u16 {
         let lo = self.read_byte(addr) as u16;
         let hi = self.read_byte(addr + 1) as u16;

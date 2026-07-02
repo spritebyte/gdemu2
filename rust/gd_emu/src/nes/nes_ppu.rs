@@ -709,6 +709,9 @@ fn rendering_enabled(&self) -> bool {
         match reg {
             2 => { // $2002 - PPUSTATUS
                 let mut res = self.status;
+                if self.scanline >= 240 && self.scanline <= 252 {
+                    godot_print!("$2002 read: current scanline={}. Status={:02X}", self.scanline, self.status);
+                }
                 self.status &= 0x7F; // Reading status clears V-Blank bit
                 self.w_latch = false;    // And resets scroll/address double-write latch
                 res
@@ -746,6 +749,13 @@ fn rendering_enabled(&self) -> bool {
             0 => { // $2000 - PPUCTRL
                 let old_ctrl = self.ctrl;
                 self.ctrl = value;
+                if (old_ctrl & 0x80) != (self.ctrl & 0x80) {
+                    if (self.ctrl & 0x80) != 0 {
+                        godot_print!("nmi_enabled");
+                    } else {
+                        godot_print!("nmi_disabled");
+                    }
+                }
                 // Extract bits to configure scrolling targets
                 self.t_addr = (self.t_addr & 0xF3FF) | (((value & 0x03) as u16) << 10);
                 self.vram_increment = if (value & 0x04) == 0x04 { 32 } else { 1 };

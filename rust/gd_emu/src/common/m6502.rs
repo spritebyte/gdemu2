@@ -47,6 +47,8 @@ pub struct M6502Cpu {
     pub total_cycles: u64,
     pub is_running: bool,
     pub config: CpuConfig,
+    cycles_remaining: u8,
+    stall_cycles: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,6 +103,8 @@ impl M6502Cpu {
             operand_address_crossed_page: false,
             is_running: false,
             config,
+            cycles_remaining: 0,
+            stall_cycles: 0,
         }
     }
 
@@ -130,46 +134,49 @@ impl M6502Cpu {
 //        godot_print!("I flag after power_on: {}", self.p.contains(Status::I));
     }
 
+    // return true only when an instruction completes
     pub fn step(&mut self, bus: &mut dyn AddressBus) -> u8 {
+        if self.cycles_remaining > 0 {
+            self.cycles_remaining -= 1;
+            return 1;
+        }
+
+        // instruction is complete - check NMI/IRQ before fetching next opcode
+        let current_nmi_line = bus.is_nmi_line_asserted();
+        if !self.prev_nmi_line && current_nmi_line {
+            self.nmi_pending = true;
+        }
+        self.prev_nmi_line = current_nmi_line;
+
         if self.nmi_pending {
             self.nmi_pending = false;
             let nmi_cycles = self.trigger_nmi(bus);
-            self.total_cycles += nmi_cycles as u64;
-            return nmi_cycles;
+            self.cycles_remaining = nmi_cycles - 1;
+            return 1;
         }
 
         if bus.is_irq_line_asserted() && !self.p.contains(Status::I) {
             let irq_cycles = self.trigger_irq(bus);
-            self.total_cycles += irq_cycles as u64;
-            return irq_cycles;
+            self.cycles_remaining = irq_cycles - 1;
+            return 1;
         }
 
         let opcode = bus.read_byte(self.pc);
         self.last_opcode = opcode;
-        self.last_cycles = 0;
-        let memory = bus.read_byte(self.pc+1);
-        let next_mem = bus.read_byte(self.pc+2);
+
+        if bus.total_cycles() > 89000 && bus.total_cycles() < 93000 {
+            godot_print!("PC={:04X} op={:02X} A={:02X} X={:02X} Y={:02X} SP={:02X} P={:02X}", 
+            self.pc, opcode, self.a, self.x, self.y, self.sp, self.p.bits());
+        }
 //        if self.total_cycles > 265_000 && self.total_cycles < 271_000 {
 //            godot_print!("Current opcode: {:02x} PC={:04x}|A={:02x}|SP={:04x}|$(PC+1)={:02X} {:02X}", opcode, self.pc, self.a, self.sp, memory, next_mem);
 //        }
         self.pc = self.pc.wrapping_add(1);
-
+        self.last_cycles = 0;
         self.execute(opcode, bus);
-        if self.nmi_armed {
-            self.nmi_armed = false;
-            self.nmi_pending = true;
-        }
 
-        let current_nmi_line = bus.is_nmi_line_asserted();
-        if !self.prev_nmi_line && current_nmi_line {
-            self.nmi_armed = true;
-//            println!("CPU_STEP: nmi_armed set to true");
-        }
-        self.prev_nmi_line = current_nmi_line;
-
-        self.total_cycles += self.last_cycles as u64;
-        bus.update_cycles(self.total_cycles);
-        self.last_cycles
+        self.cycles_remaining += self.last_cycles - 1;
+        1
     }
 
     pub fn reset(&mut self, bus: &impl AddressBus) {
@@ -1064,7 +1071,6 @@ impl M6502Cpu {
     }
 
     fn trigger_nmi(&mut self, bus: &mut dyn AddressBus) -> u8 {
-        self.nmi_pending = false;
         self._stack_push16(bus, self.pc);
         let flags:u8 = (self.p.bits() & !0x10) | 0x20;
         self._stack_push8(bus, flags);
@@ -1072,7 +1078,7 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFA) as u16;
         let hi = bus.read_byte(0xFFFB) as u16;
         self.pc = (hi << 8) | lo;
-//        println!("({}): NMI triggered. PC set to {:04X} SP={:04X}", self.total_cycles, self.pc, self.sp);
+        godot_print!("({}): NMI triggered. PC set to {:04X} SP={:04X}", bus.total_cycles(), self.pc, self.sp);
         7
     }
 
