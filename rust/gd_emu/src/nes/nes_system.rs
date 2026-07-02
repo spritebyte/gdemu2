@@ -42,6 +42,8 @@ pub struct NesSystem {
     save_filename: String,
     sys_display: Gd<SystemDisplayInfo>,
     playback: Option<Gd<AudioStreamGeneratorPlayback>>,
+    cached_image: Option<Gd<Image>>,
+    cached_texture: Option<Gd<ImageTexture>>,
 }
 
 #[derive(godot::prelude::GodotClass)]
@@ -157,6 +159,8 @@ impl NesSystem {
                 save_battery_path: "user://GD_EMU/NES/Save".to_string(),
                 playback: None,
                 sys_display: Gd::from_object(SystemDisplayInfo::new()),
+                cached_image: None,
+                cached_texture: None,
             }
         }))
     }
@@ -205,7 +209,7 @@ impl NesSystem {
 
     fn tick_components(&mut self, cycles: u64) {
         self.bus.total_cpu_cycles += cycles as u64;
-        let mapper_ref = &mut *self.bus.cartridge.mapper;
+        let mapper_ref = self.bus.cartridge.mapper_mut();
         self.bus.ppu.get_mut().catch_up(mapper_ref, self.bus.total_cpu_cycles);
 //        self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
         self.bus.step_cycles(cycles);
@@ -295,22 +299,25 @@ impl NesSystem {
 
     #[func]
     pub fn get_frame_texture(&mut self) -> Gd<Texture2D> {
-        self.frame_ready.store(false, Ordering::Release);        
-        // return self.bus.ppu.render_frame();
-
+        self.frame_ready.store(false, Ordering::Release);
         let raw_pixels = self.bus.ppu.get_mut().get_front_buffer();
-        
-        
-        let mut godot_image = Image::create_from_data(
-                256, 
-                240, 
-                false, 
-                Format::RGBA8, 
-                &PackedByteArray::from_iter(raw_pixels.iter().copied())
-        ).unwrap();
-        
-        let texture = ImageTexture::create_from_image(Some(&godot_image)).unwrap();
-        texture.upcast()
+        let pixel_data = PackedByteArray::from_iter(raw_pixels.iter().copied());
+
+        if self.cached_image.is_none() {
+            let image = Image::create_from_data(256, 240, false, Format::RGBA8, &pixel_data).unwrap();
+            let texture = ImageTexture::create_from_image(&image).unwrap();
+            self.cached_image = Some(image);
+            self.cached_texture = Some(texture);
+        } else {
+            if let Some(image) = self.cached_image.as_mut() {
+                image.set_data(256, 240, false, Format::RGBA8, &pixel_data);
+            }
+            let image_clone = self.cached_image.as_ref().unwrap().clone();
+            if let Some(texture) = self.cached_texture.as_mut() {
+                texture.update(&image_clone);
+            }
+        }
+        self.cached_texture.as_ref().unwrap().clone().upcast()
     }
 
     // A factory function that maps an integer ID to a concrete Rust struct

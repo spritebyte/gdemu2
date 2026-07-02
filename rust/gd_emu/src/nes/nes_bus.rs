@@ -45,7 +45,7 @@ impl NesBus {
     pub fn clear_sram_dirty(&mut self) { self.cartridge.clear_sram_dirty(); }
     pub fn step_cycles(&mut self, cycles: u64) {
         // Forward the updated cycle counter to the cartridge's mapper
-        self.cartridge.mapper.step_cycles(cycles);
+        self.cartridge.mapper_mut().step_cycles(cycles);
     }
 }
 
@@ -61,7 +61,7 @@ impl AddressBus for NesBus {
     }
 
     fn is_irq_line_asserted(&mut self) -> bool {
-        self.apu.get_mut().is_irq_asserted() || self.cartridge.mapper.is_irq_asserted()
+        self.apu.get_mut().is_irq_asserted() || self.cartridge.mapper_mut().is_irq_asserted()
     }
 
     fn read_byte(&self, addr: u16) -> u8 {
@@ -73,7 +73,7 @@ impl AddressBus for NesBus {
                 let ppu_mut = unsafe { &mut *self.ppu.get() };
 //                ppu_mut.catch_up(mapper_for_catchup, self.total_cpu_cycles);
 //                println!("BUS read_byte: {:04X} reg:{ :02X} ", addr, register);
-                let mapper_ref = &*self.cartridge.mapper;              
+                let mapper_ref = self.cartridge.mapper();              
                 ppu_mut.cpu_read_reg(mapper_ref, register)
             }
             0x4015 => {
@@ -89,7 +89,7 @@ impl AddressBus for NesBus {
                 }
                 value
             }
-            0x4020..=0xFFFF => self.cartridge.mapper.cpu_read(addr),
+            0x4020..=0xFFFF => self.cartridge.mapper().cpu_read(addr),
             _ => 0,
         }
     }
@@ -99,7 +99,7 @@ impl AddressBus for NesBus {
             0x0000..=0x1FFF => self.ram[(addr % 0x0800) as usize] = value,
             0x2000..=0x3FFF => {
                 let register = addr % 8;
-                let mapper_ref = &mut *self.cartridge.mapper;
+                let mapper_ref = self.cartridge.mapper_mut();
 
                 let ppu_mut = self.ppu.get_mut();
                 ppu_mut.cpu_write_reg(mapper_ref, register, value);
@@ -131,7 +131,7 @@ impl AddressBus for NesBus {
             0x4000..=0x401F => { 
                 self.apu.get_mut().write_reg(addr, value);
              }
-            0x4020..=0xFFFF => { self.cartridge.mapper.cpu_write(addr, value); }
+            0x4020..=0xFFFF => { self.cartridge.mapper_mut().cpu_write(addr, value); }
         }
     }
 }
