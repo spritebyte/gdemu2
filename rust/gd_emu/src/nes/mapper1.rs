@@ -1,5 +1,5 @@
 use crate::nes::mappers::{Mapper,Mirroring};
-
+use godot::global::godot_print;
 
 // Mapper 1 (MMC1) 
 pub struct Mapper1 {
@@ -99,6 +99,7 @@ impl Mapper for Mapper1 {
 
         if addr >= 0x8000 && addr <= 0xFFFF {
             let prg_mode = (self.control >> 2) & 0x03;
+//            godot_print!("prg_mode={:02X}, control={:02X}", prg_mode, self.control);
             let bank_size: usize = 16384;
 
             let mut surom_bank_ext = 0;
@@ -121,7 +122,7 @@ impl Mapper for Mapper1 {
             let bank_idx = match prg_mode {
                 0 | 1 => {
                     // Mode 0 & 1: Switch 32KB at $8000 (ignore lowest bit of bank selection)
-                    let base = (self.prg_bank & 0x0F) as usize & 0xFE;
+                    let base = self.prg_bank as usize & 0xFE;
                     if addr < 0xC000 {
                         prg_base_bank + base
                     } else {
@@ -195,6 +196,7 @@ impl Mapper for Mapper1 {
 
             match target_reg {
                 0 => { // $8000-$9FFF: Control Register
+                    godot_print!("Updating control register from {:02X} to {:02X}", self.control, self.shift_reg);
                     self.control = self.shift_reg;
                     self.update_mirroring();
                 }
@@ -206,7 +208,9 @@ impl Mapper for Mapper1 {
                 }
                 3 => { // $E000-$FFFF: PRG Bank
                     // Strip the PRG RAM protect bit (bit 4) if present
-                    self.prg_bank = self.shift_reg & 0x0F;
+                    let prg_bank_stripped = self.shift_reg & 0x0F;
+                    godot_print!("prg_bank updated from {:02X} to {:02X}", self.prg_bank, self.shift_reg);
+                    self.prg_bank = self.shift_reg;
                 }
                 _ => unreachable!(),
             }

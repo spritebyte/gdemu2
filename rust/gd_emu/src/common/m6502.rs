@@ -38,6 +38,7 @@ pub struct M6502Cpu {
     pub x: u8,
     pub y: u8,
     pub p: Status,           // Status register (flags)
+    nmi_armed: bool,
     nmi_pending: bool,
     prev_nmi_line: bool,
     last_cycles: u8,
@@ -91,6 +92,7 @@ impl M6502Cpu {
             x: 0,
             y: 0,
             p: Status::empty(),
+            nmi_armed: false,
             nmi_pending: false,
             prev_nmi_line: false,
             last_cycles: 0,
@@ -110,6 +112,7 @@ impl M6502Cpu {
         self.is_running = true;
         self.a = 0; self.x = 0; self.y = 0;
         self.sp = 0xFD;
+        self.nmi_armed = false;
         self.nmi_pending = false;
         self.prev_nmi_line = false;
         self.last_cycles = 0;
@@ -124,16 +127,10 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFC) as u16;
         let hi = bus.read_byte(0xFFFD) as u16;
         self.pc = (hi << 8) | lo;
-        godot_print!("I flag after power_on: {}", self.p.contains(Status::I));
+//        godot_print!("I flag after power_on: {}", self.p.contains(Status::I));
     }
 
     pub fn step(&mut self, bus: &mut dyn AddressBus) -> u8 {
-        let current_nmi_line = bus.is_nmi_line_asserted();
-        if !self.prev_nmi_line && current_nmi_line {
-            self.nmi_pending = true;
-        }
-        self.prev_nmi_line = current_nmi_line;
-
         if self.nmi_pending {
             self.nmi_pending = false;
             let nmi_cycles = self.trigger_nmi(bus);
@@ -150,12 +147,25 @@ impl M6502Cpu {
         let opcode = bus.read_byte(self.pc);
         self.last_opcode = opcode;
         self.last_cycles = 0;
-//        if self.total_cycles > 200_000 && self.total_cycles < 210_000 {
-//            godot_print!("Current opcode: {:02x} PC={:04x}|A={:02x}|SP={:04x}", opcode, self.pc, self.a, self.sp);
+        let memory = bus.read_byte(self.pc+1);
+        let next_mem = bus.read_byte(self.pc+2);
+//        if self.total_cycles > 265_000 && self.total_cycles < 271_000 {
+//            godot_print!("Current opcode: {:02x} PC={:04x}|A={:02x}|SP={:04x}|$(PC+1)={:02X} {:02X}", opcode, self.pc, self.a, self.sp, memory, next_mem);
 //        }
         self.pc = self.pc.wrapping_add(1);
 
         self.execute(opcode, bus);
+        if self.nmi_armed {
+            self.nmi_armed = false;
+            self.nmi_pending = true;
+        }
+
+        let current_nmi_line = bus.is_nmi_line_asserted();
+        if !self.prev_nmi_line && current_nmi_line {
+            self.nmi_armed = true;
+//            println!("CPU_STEP: nmi_armed set to true");
+        }
+        self.prev_nmi_line = current_nmi_line;
 
         self.total_cycles += self.last_cycles as u64;
         bus.update_cycles(self.total_cycles);
@@ -168,6 +178,7 @@ impl M6502Cpu {
         self.x = 0;
         self.y = 0;
         self.p.insert(Status::I);
+        self.nmi_armed = false;
         self.nmi_pending = false;
         self.prev_nmi_line = false;
         self.last_cycles = 0;
@@ -1061,8 +1072,7 @@ impl M6502Cpu {
         let lo = bus.read_byte(0xFFFA) as u16;
         let hi = bus.read_byte(0xFFFB) as u16;
         self.pc = (hi << 8) | lo;
-//        let current_sp=self.sp;
-//        println!("({}): NMI triggered. SP={current_sp}", self.total_cycles);
+//        println!("({}): NMI triggered. PC set to {:04X} SP={:04X}", self.total_cycles, self.pc, self.sp);
         7
     }
 

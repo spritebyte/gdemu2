@@ -204,12 +204,13 @@ impl NesSystem {
     }
 
     fn tick_components(&mut self, cycles: u64) {
-        let mapper_ref = &mut *self.bus.cartridge.mapper; 
-        self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
+        self.bus.total_cpu_cycles += cycles as u64;
+        let mapper_ref = &mut *self.bus.cartridge.mapper;
+        self.bus.ppu.get_mut().catch_up(mapper_ref, self.bus.total_cpu_cycles);
+//        self.bus.ppu.get_mut().step(mapper_ref, cycles * 3);
         self.bus.step_cycles(cycles);
         let apu_ptr = self.bus.apu.get();
         unsafe { (*apu_ptr).step(cycles, &self.bus); }
-        self.bus.total_cpu_cycles += cycles as u64;
     }
 
     #[func]
@@ -219,10 +220,13 @@ impl NesSystem {
         let _playback = audio_player.get_stream_playback();
         let lo = self.bus.read_byte(0xFFFC);
         let hi = self.bus.read_byte(0xFFFD);
+        let lo2 = self.bus.read_byte(0xFFFE);
+        let hi2 = self.bus.read_byte(0xFFFF);
         godot_print!(
         "CPU Powering On:\n\
          - Reset Vector Bytes: [$FFFC] = 0x{:02X}, [$FFFD] = 0x{:02X}\n\
-         - Initial Program Counter (PC): 0x{:04X}", lo, hi, self.cpu.pc);
+         - 0x{:02X}, 0x{:02X}\n\
+         - Initial Program Counter (PC): 0x{:04X}", lo, hi, lo2, hi2, self.cpu.pc);
         let save_path = format!("{}/{}.sav", self.save_battery_path, self.save_filename);
         if self.bus.cartridge.has_battery && godot::classes::FileAccess::file_exists(&save_path) {
             if let Some(mut file) = godot::classes::FileAccess::open(&save_path, godot::classes::file_access::ModeFlags::READ) {

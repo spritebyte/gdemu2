@@ -85,4 +85,58 @@ impl Z80Cpu {
             sp: 0,
         }
     }
+    
+    pub fn step_one_m_cycle(&mut self, bus: &mut GameBoyBus) {
+        if self.cycles_remaining == 0 && self.handle_interrupts(bus) {
+            return; 
+        }
+
+        if self.cycles_remaining == 0 {
+            // ---- M-CYCLE 1: FETCH STAGE ----
+            self.current_opcode = bus.read_byte(self.pc);
+            self.pc = self.pc.wrapping_add(1);
+            self.instruction_step = 0;
+            self.cycles_remaining = self.get_instruction_m_cycles(self.current_opcode);
+        } else {
+            // ---- M-CYCLES 2+: EXECUTION PIPELINE MICRO-STEPS ----
+            self.execute_micro_step(bus);
+            self.instruction_step += 1;
+        }
+
+        self.cycles_remaining -= 1;
+    }
+
+    fn execute_micro_step(&mut self, bus: &mut GameBoyBus) {
+        match self.current_opcode {
+            // LD (HL), A
+            0x77 => {
+                if self.instruction_step == 0 {
+                    let addr = ((self.h as u16) << 8) | (self.l as u16);
+                    bus.write_byte(addr, self.a);
+                }
+            }
+            // ... other multi-cycle opcodes
+            _ => {}
+        }
+    }
+
+    fn get_instruction_m_cycles(&self, opcode: u8) -> u8 {
+        match opcode {
+            // 1 M-cycle instructions (e.g., 8-bit register-to-register copies)
+            0x7F | 0x40..=0x45 => 1, // LD A,A; LD B,B etc.
+
+            // 2 M-cycle instructions (e.g., Immediate 8-bit loads, reading a byte from memory)
+            0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E => 2, // LD r, d8
+            0x77 => 2, // LD (HL), A (You already have this one mapped!)
+
+            // 3 M-cycle instructions (e.g., Loading an immediate 16-bit value like LD BC, d16)
+            0x01 | 0x11 | 0x21 | 0x31 => 3, // LD rp, d16
+
+            // 4 M-cycle instructions (e.g., Pushing to stack, writing an 8-bit register to an absolute 16-bit destination)
+            0xEA => 4, // LD (a16), A
+            0xC5 | 0xD5 | 0xE5 | 0xF5 => 4, // PUSH rp
+
+            _ => todo!("Implement remaining opcode cycles mapping"),
+        }
+    }
 }
