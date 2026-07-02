@@ -45,7 +45,7 @@ impl Mapper1 {
             prg_bank: 0,
             write_count: 0,
             sram_dirty: false,
-            last_write_cycle: -1,
+            last_write_cycle: 0,
             current_cycle: 0,
         }
     }
@@ -168,6 +168,8 @@ impl Mapper for Mapper1 {
             return;
         }
         if addr < 0x8000 { return }
+        
+        godot_print!("Cycle:{ }, last_write_cycle:{ }|write_count={ }|Addr={:04X}|value={ }", self.current_cycle, self.last_write_cycle, self.write_count, addr, value);
 
         if self.last_write_cycle >= 0 && (self.current_cycle - self.last_write_cycle) <= 1 {
             return; 
