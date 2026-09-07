@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc};
 use std::path::PathBuf;
 use std::path::Path;
+use std::collections::VecDeque;
 
 // only checking a few bytes from logo
 const _NINTENDO_LOGO: [u8; 10] = [0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73];
@@ -23,6 +24,7 @@ pub struct GbSystemNode {
     cached_image: Option<Gd<Image>>,
     cached_texture: Option<Gd<ImageTexture>>,
     last_sample: Vector2,
+    audio_fifo: VecDeque<f32>
 }
 
 #[godot_api]
@@ -45,6 +47,7 @@ impl GbSystemNode {
 
         let node = Gd::from_init_fn(|base| GbSystemNode {
             base,
+            audio_fifo: VecDeque::new(),
             system: Some(core),
             sys_display: Gd::from_object(SystemDisplayInfo::new_gameboy()),
             playback: None,
@@ -200,23 +203,28 @@ impl GbSystemNode {
         let Some(playback) = &mut self.playback else { return };
 
         let avail = playback.get_frames_available();
-        if avail <= 0 {
-            return;
-        }
+        if avail <= 0 { return; }
 
-        let Some(sys) = &mut self.system else { return; };
-        let apu = sys.bus.apu.get_mut();
-        let raw_samples = apu.drain_samples(); // [L, R, L, R, ...]
-        let available_frames = raw_samples.len() / 2;
+        if let Some(sys) = &mut self.system {
+            let apu = sys.bus.apu.get_mut();
+            self.audio_fifo.extend(apu.drain_samples());
+        } else { return; };
+//        let raw_samples = apu.drain_samples(); // [L, R, L, R, ...]
+//        let available_frames = raw_samples.len() / 2;
+
+        let queued_frames = self.audio_fifo.len() / 2;
+        let to_write = queued_frames.min(avail as usize);
 
         let mut frames = PackedVector2Array::new();
-        frames.resize(avail as usize);
+        frames.resize(to_write as usize);
 
-        let count = available_frames.min(avail as usize);
+//        let count = available_frames.min(avail as usize);
 
-        for i in 0..count {
-            let left = raw_samples[i * 2];
-            let right = raw_samples[i * 2 + 1];
+        for i in 0..to_write {
+//            let left = raw_samples[i * 2];
+//            let right = raw_samples[i * 2 + 1];
+            let left = self.audio_fifo.pop_front().unwrap();
+            let right = self.audio_fifo.pop_front().unwrap();
             let sample_vec = Vector2::new(left, right);
             frames[i] = sample_vec;
             self.last_sample = sample_vec;
@@ -224,11 +232,17 @@ impl GbSystemNode {
 
         // FIXED: Fill remaining available buffer space with silence/last_sample 
         // to prevent audio stream underflow popping/silence stalls
-        for i in count..(avail as usize) {
-            frames[i] = self.last_sample;
+ //       for i in count..(avail as usize) {
+//            frames[i] = self.last_sample;
+//        }
+        if to_write > 0 {
+            playback.push_buffer(&frames);
         }
 
-        playback.push_buffer(&frames);
+        let max_queued = (avail as usize) * 4 * 2;
+        while self.audio_fifo.len() > max_queued {
+            self.audio_fifo.pop_front();
+        }
     }
 }
 

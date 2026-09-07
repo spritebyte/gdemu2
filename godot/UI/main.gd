@@ -50,7 +50,7 @@ func _ready() -> void:
 
 	audio_gen = AudioStreamGenerator.new()
 	audio_gen.mix_rate = 44100
-	audio_gen.buffer_length = 0.05
+	audio_gen.buffer_length = 0.1
 	audio_player = AudioStreamPlayer.new()
 	audio_player.stream = audio_gen
 	add_child(audio_player)
@@ -179,7 +179,7 @@ func _get_serialized_input() -> int:
 	mask |= (key_value << 8)
 #	print("Mask=%02X" % mask)
 	return mask
-const FRAME_TIME_USEC := 16639
+const FRAME_TIME_USEC := 16743
 
 func _thread_loop():
 	var next_frame_time := Time.get_ticks_usec()

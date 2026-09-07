@@ -15,6 +15,7 @@ pub struct GbPPU {
     pending_irqs: u8,
     pub current_mode: u8,
     window_line_counter: u8,
+    prev_stat_line: bool,
     // registers
     lcdc: u8,
     scy: u8,
@@ -39,10 +40,11 @@ pub struct GbPPU {
     // Frame published
     frame_published: Arc<AtomicBool>,
     slice_complete: bool,
-
+    pub frame: u64,
     pub active_palette: DmgPaletteSet,
     // CGB-only
-    hdma_pending: bool,
+    //hdma_pending: bool,
+    hdma_hblank_count: u8,
     pub vbk: u8,
     bgpi: u8,
     obpi: u8,
@@ -61,10 +63,10 @@ impl GbPPU {
         let vram_size: usize = if in_cgb_mode { 16384 } else { 8192 };
 
         Self {
-            hardware: variant, cgb_mode: in_cgb_mode, hdma_pending: false,
+            hardware: variant, cgb_mode: in_cgb_mode, hdma_hblank_count: 0,
             last_master: 0, ticks: 0,
             dot: 0, current_mode: 0,
-            pending_irqs: 0,
+            pending_irqs: 0, frame: 0, prev_stat_line: false,
             vram: vec![0;vram_size], oam: [0;160], scanline_bg_indices: [0; 160],
             scanline_bg_priority: [false;160],
             back_buffer: vec![0; buffer_size],
@@ -114,8 +116,9 @@ impl GbPPU {
                         }
                         self.frame_published.store(true, Ordering::Release);
                     } else {
-                        self._set_mode(2);
+                        self._set_mode(2);    
                     }
+                    self.update_stat_line();
                 }
             }
 
@@ -124,32 +127,34 @@ impl GbPPU {
                 if self.dot >= 456 {
                     self.dot -= 456;
                     self.ly = self.ly.wrapping_add(1);
-                    self._update_stat_coincidence();
                     self.window_line_counter = 0;
                     if self.ly > 153 {
                         self.ly = 0;
                         self.slice_complete = true;
+                        self.frame = self.frame.wrapping_add(1);
                         self._set_mode(2);
                     }
+                    self._update_stat_coincidence();
+                    self.update_stat_line();
                 }
             }
 
-            // OAM Search
+            // OAM Search done -> entering mode 3 (drawing)
             2 => {
                 if self.dot >= 80 {
                     self.dot -= 80;
                     self._set_mode(3);
+                    self._render_scanline();
+                    self._render_sprites();
+                    self.update_stat_line();
                 }
             }
 
-            // Drawing
             3 => {
                 if self.dot >= 172 {
                     self.dot -= 172;
-                    self._render_scanline();
-                    self._render_sprites();
                     self._set_mode(0);
-
+                    self.update_stat_line();
                 }
             }
 
@@ -177,9 +182,9 @@ impl GbPPU {
         self.stat = (self.stat & 0xFC) | (self.current_mode & 0x03);
 
         if new_mode == 0 && old_mode != 0 && self.ly < 144 {
-            self.hdma_pending = true;
+            self.hdma_hblank_count = self.hdma_hblank_count.saturating_add(1);
         }
-
+/*
         let mut trigger: bool = false;
         if self.current_mode == 0 && (self.stat & 0x08) != 0 { trigger = true; }
         else if self.current_mode == 1 && (self.stat & 0x10) != 0 { trigger = true; }
@@ -188,10 +193,11 @@ impl GbPPU {
         if trigger {
             self._request_stat_interrupt();
         }
+*/
     }
 
-    pub fn take_hdma_pending(&mut self) -> bool {
-        std::mem::replace(&mut self.hdma_pending, false)
+    pub fn take_hdma_hblanks(&mut self) -> u8 {
+        std::mem::replace(&mut self.hdma_hblank_count, 0)
     }
 
     pub fn is_slice_complete(&self) -> bool {
@@ -210,12 +216,28 @@ impl GbPPU {
         self.pending_irqs |= 0x02
     }
 
+    fn update_stat_line(&mut self) {
+        let mode_irq = match self.current_mode {
+            0 => self.stat & 0x08,
+            1 => self.stat & 0x10,
+            2 => self.stat & 0x20,
+            _ => 0,
+        } != 0;
+        let lyc_irq = (self.stat & 0x40 != 0) && (self.ly == self.lyc);
+        let line = mode_irq || lyc_irq;
+
+        if line && !self.prev_stat_line {   // rising edge only
+            self._request_stat_interrupt();
+        }
+        self.prev_stat_line = line;
+    }
+
     fn _update_stat_coincidence(&mut self) {
         if self.ly == self.lyc {
             self.stat |= 0x04;
-            if self.stat & 0x40 != 0 {
-                self._request_stat_interrupt();
-            }
+//            if self.stat & 0x40 != 0 {
+//                self._request_stat_interrupt();
+//            }
         } else {
             self.stat &= !0x04;
         }
@@ -408,6 +430,10 @@ impl GbPPU {
                 let byte1 = self.vram[tile_data_addr];
                 let byte2 = self.vram[tile_data_addr + 1];
 
+                if *sprite_idx == 12 {  // mid-screen, once per frame
+                   println!("spr{} x={} xflip={} | SCX={} SCY={} LY={}",
+                    sprite_idx, x_pos, x_flip, self.scx, self.scy, self.ly);
+                }
                 for x in 0..8 {
                     let screen_x = x_pos + x;
                     if screen_x < 0 || screen_x >= 160 {
@@ -527,7 +553,7 @@ impl GbPPU {
             0xFF41 => { self.stat | 0x80 },
             0xFF42 => { self.scy },
             0xFF43 => { self.scx },
-            0xFF44 => { println!("LY read = {}", self.ly); self.ly },
+            0xFF44 => { self.ly },
             0xFF45 => { self.lyc },
             0xFF47 => { self.bgp },
             0xFF48 => { self.obp0 },
@@ -573,16 +599,24 @@ impl GbPPU {
             },
             0xFF41 => { self.stat = (self.stat & 0x07) | (p_value & 0x78); },
             0xFF42 => { self.scy = p_value; },
-            0xFF43 => { self.scx = p_value; },
+            0xFF43 => { self.scx = p_value;
+                println!("SCX write LY={} val={}", self.ly, p_value); 
+            },
             0xFF44 => { },
-            0xFF45 => { self.lyc = p_value; self._update_stat_coincidence(); },
+            0xFF45 => { self.lyc = p_value;
+                self._update_stat_coincidence();
+                self.update_stat_line();
+            },
             0xFF47 => { self.bgp = p_value; },
             0xFF48 => { self.obp0 = p_value; },
             0xFF49 => { self.obp1 = p_value; },
             0xFF4A => { self.wy = p_value; },
             0xFF4B => { self.wx = p_value; },
             0xFF4D => { },
-            0xFF68 => { self.bgpi = p_value; },
+            0xFF68 => { 
+                self.bgpi = p_value;
+                println!("BGP write LY={} val={:02X}", self.ly, p_value);
+            },
             0xFF69 => { 
                 let index = (self.bgpi & 0x3F) as usize;
                 self.bgpd[index] = p_value;
@@ -590,6 +624,7 @@ impl GbPPU {
                     let new_idx = (index + 1) & 0x3F;
                     self.bgpi = (0x80) | (new_idx as u8);
                 }
+                println!("BGPI write LY={} val={:02X}", self.ly, p_value);
             },
             0xFF6A => { self.obpi = p_value; },
             0xFF6B => { 

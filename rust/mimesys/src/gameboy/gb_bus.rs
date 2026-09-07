@@ -129,6 +129,7 @@ impl GameBoyBus {
             0xFF0F => self.iflags | 0xE0,
             // APU Sound registers ($FF10-$FF3F)
             0xFF10..=0xFF3F => unsafe { (*self.apu.get()).read_register(addr) },
+            0xFF46 => (self.dma.source_base >> 8) as u8,
             0xFF40..=0xFF4B | 0xFF4F | 0xFF68..=0xFF6B => unsafe { (*self.ppu.get()).read_register(addr) },
             0xFF4C => {
                 println!("Read from 0xFF4C returning {:02X}", self.key0);
@@ -165,7 +166,9 @@ impl GameBoyBus {
             // APU range $FF10-$FF3F
             0xFF10..=0xFF3F => unsafe { (*self.apu.get()).write_register(addr, value) },
             0xFF46 => self.dma.start(value, self.master),
-            0xFF40..=0xFF4B | 0xFF4F | 0xFF68..=0xFF6B => unsafe { (*self.ppu.get()).write_register(addr, value) },
+            0xFF40..=0xFF4B | 0xFF4F | 0xFF68..=0xFF6B => {
+                unsafe { (*self.ppu.get()).write_register(addr, value) }
+            },
             0xFF4C => {
                  if self.boot_rom_mapped { 
                     self.key0 = value;
@@ -310,9 +313,23 @@ impl GameBoyBus {
         }
     }
     
+    fn dma_read_source(&mut self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x7FFF | 0xA000..=0xBFFF => unsafe { (*self.cartridge.mbc.get()).read(addr) },
+            0x8000..=0x9FFF => unsafe {
+                let bank = if self.variant == GbVariant::Cgb { ((*self.ppu.get()).vbk & 0x01) as usize } else { 0 };
+                (&(*self.ppu.get()).vram)[(addr & 0x1FFF) as usize + bank * 0x2000]
+            },
+            0xC000..=0xFDFF => self.ram[self.get_wram_offset(addr & 0xDFFF)], // echo -> WRAM
+            0xE000..=0xFFFF => self.ram[self.get_wram_offset((addr & 0xDFFF).max(0xC000))],
+            _ => 0xFF,
+        }
+    }
+
     // Immediate GDMA Transfer
     fn perform_gdma(&mut self, blocks: u16) {
         let total_bytes = blocks * 16;
+        println!("GDMA {} blocks", blocks);
 
         for _ in 0..total_bytes {
             let byte = self.read_raw(self.hdma_src);
@@ -332,12 +349,15 @@ impl GameBoyBus {
     }
 
     pub fn tick_hdma_block(&mut self) {
+        println!("HDMA block src={:04X} dst={:04X}", self.hdma_src, self.hdma_dst);
+
         if !self.hdma_active {
             return;
         }
 
         for _ in 0..16 {
             let byte = self.read_raw(self.hdma_src);
+//            let byte = self.dma_read_source(self.hdma_src);
             self.write_raw(self.hdma_dst, byte);
 
             self.hdma_src = self.hdma_src.wrapping_add(1);
@@ -367,7 +387,9 @@ impl Timed for GameBoyBus {
     fn run_until(&mut self, target_master: u64) {
         unsafe {
             (*self.ppu.get()).run_until(target_master);
-            if (*self.ppu.get()).take_hdma_pending() {
+            let hblanks = (*self.ppu.get()).take_hdma_hblanks();
+            for _ in 0..hblanks {
+                if !self.hdma_active { break; }
                 self.tick_hdma_block();
             }
             (*self.apu.get()).run_until(target_master);
@@ -376,7 +398,8 @@ impl Timed for GameBoyBus {
 
         while (self.dma.active || self.dma.delay_m_cycles > 0) && self.dma.next_tick_master <= target_master {
             if let Some((src_addr, oam_offset)) = self.dma.tick_m_cycle() {
-                let byte = self.read_raw(src_addr);
+//                let byte = self.read_raw(src_addr);
+                let byte = self.dma_read_source(src_addr);
                 unsafe {
                     (*self.ppu.get()).oam[oam_offset] = byte;
                 }

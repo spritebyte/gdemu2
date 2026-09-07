@@ -348,13 +348,13 @@ impl GameBoyCpu {
             Instruction::Nop => true,
             Instruction::EI => { 
                 self.ime_pending = true;
-                println!("IME set via {} at PC={:04X}", "EI", self.pc);
+//                println!("IME set via {} at PC={:04X}", "EI", self.pc);
                 true 
             },
             Instruction::DI => {
                 self.ime = false;
                 self.ime_pending = false;
-                println!("IME set via {} at PC={:04X}", "DI", self.pc);
+//                println!("IME set via {} at PC={:04X}", "DI", self.pc);
                 true
             },
             Instruction::Halt => {
@@ -695,12 +695,12 @@ impl GameBoyCpu {
                     }
                     2 => {
                         self.push(bus, (self.pc >> 8) as u8); // M3: Push High PC byte
-                        println!("IRQ push hi: SP={:04X} val={:02X}", self.sp, (self.pc>>8) as u8);
+//                        println!("IRQ push hi: SP={:04X} val={:02X}", self.sp, (self.pc>>8) as u8);
                         false
                     }
                     3 => {
                         self.push(bus, (self.pc & 0xFF) as u8); // M4: Push Low PC byte
-                        println!("IRQ push lo: SP={:04X} val={:02X}", self.sp, (self.pc&0xFF) as u8);
+//                        println!("IRQ push lo: SP={:04X} val={:02X}", self.sp, (self.pc&0xFF) as u8);
                         false
                     }
                     _ => {
@@ -1002,7 +1002,7 @@ impl GameBoyCpu {
                         _ => {
                             bus.idle_cycle();
                             self.pc = ((self.current_msb as u16) << 8) | (self.current_lsb as u16);
-                            println!("RET -> {:04X}  SP={:04X}", self.pc, self.sp);
+//                            println!("RET -> {:04X}  SP={:04X}", self.pc, self.sp);
                             true
                         }
                     },
@@ -1027,7 +1027,7 @@ impl GameBoyCpu {
                             bus.idle_cycle();
                             let target = ((self.current_msb as u16)<< 8) | (self.current_lsb as u16);
                             self.pc = target;
-                            println!("RET (cond) -> {:04X}  SP={:04X}", self.pc, self.sp);
+//                            println!("RET (cond) -> {:04X}  SP={:04X}", self.pc, self.sp);
                             true
                         }
                     },
@@ -1042,7 +1042,7 @@ impl GameBoyCpu {
                         bus.idle_cycle();
                         self.pc = (self.current_msb as u16) << 8 | (self.current_lsb as u16);
                         self.ime = true;
-                        println!("RETI -> {:04X}  SP={:04X} IME={}", self.pc, self.sp, self.ime);
+//                        println!("RETI -> {:04X}  SP={:04X} IME={}", self.pc, self.sp, self.ime);
                         true
                     }
                 }
@@ -1298,7 +1298,7 @@ impl GameBoyCpu {
         if !self.ime { return false; }
         let pending = bus.irq_pending();
         if pending == 0 { return false; }
-        println!("IRQ FIRE: saving PC={:04X} pending={:02X} SP={:04X}", self.pc, pending, self.sp);
+//        println!("IRQ FIRE: saving PC={:04X} pending={:02X} SP={:04X}", self.pc, pending, self.sp);
 
         let index = pending.trailing_zeros() as u8;
         self.serviced_bit = index;
